@@ -1,0 +1,86 @@
+/**
+ * testing upvalue capture
+ */
+
+// basic upvalue
+{
+  let x0 = 0;
+  let x1 = 1;
+  let x2 = 2;
+  let foo = func() {
+    let x3 = 3;
+    return func() {
+      let x4 = 4;
+      return func() {
+        return x0 + x1 + x2 + x3 + x4;
+      };
+    };
+  };
+
+  assert foo()()() == 0 + 1 + 2 + 3 + 4;
+}
+
+// collapsing
+{
+  let x0 = 0;
+  let x1 = 1;
+  let x2 = 2;
+  let foo = func() {
+    return func() {
+      return func() {
+        return func() {
+          return x0 + x1 + x2;
+        };
+      };
+    };
+  };
+
+  assert foo()()()() == x0 + x1 + x2;
+}
+
+// peek the upvalue later
+{
+  let x0 = 0;
+  let x1 = 1;
+  let foo = func() {
+    let uv = func() {
+      return x0 + x1;
+    };
+
+    return uv() + x1;
+  };
+
+  assert foo() == 2;
+}
+
+// overwrite
+{
+  let x0 = 0;
+  let x1 = 1;
+  let foo = func() {
+    let x1 = 20;
+    let uv = func() {
+      return x1 + x1;
+    };
+    return uv();
+  };
+  assert foo() == 40;
+}
+
+// object state
+{
+  let shared_object = {
+    "gen" : 0
+  };
+  let foo = func() {
+    return func() {
+      shared_object.gen = shared_object.gen + 1;
+    };
+  };
+
+  foo()();
+  foo()();
+  foo()();
+  assert shared_object.gen == 3;
+}
+

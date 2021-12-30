@@ -1,0 +1,169 @@
+// testing the expression basic evaluation etc ...
+trace "testing the expression";
+
+func test_expr_basic() {
+  assert 1 == 1;
+  assert 0 != 1;
+  assert 1 != 0;
+  assert true;
+  assert !false;
+  assert true == true;
+  assert false == false;
+
+  assert "" == "";
+  assert "abc" == 'abc';
+
+  // arithmetic expression
+  assert 1+2*3 == 7, "1+2*3 == 7";
+  assert 1+4%2 == 1, "1+4%2 == 1";
+  assert 1+4/2 == 3, "1+4/2 == 3";
+
+  let a = 100;
+  b = 200;
+  assert a + b == 300, "global a + local b";
+}
+test_expr_basic();
+
+/*
+ * the precedence is as following, from high to low
+ *   primary expression
+ *        unary
+ *    pow/mul/div/mod
+ *       add/sub
+ *     gt/ge/lt/le
+ *        eq/ne
+ *       and/or
+ *      ternary
+ */
+
+func count_iter(x) {
+  let y = 0;
+  for _ in x {
+    y = y + 1;
+  }
+  return y;
+}
+
+func testing_expr_primary() {
+  trace "expression testing => primary";
+  let a = [];
+  let b = {};
+  let c = "";
+  let d = "abc";
+  assert count_iter(a) == 0;
+  assert count_iter(b) == 0;
+  assert count_iter(c) == 0;
+  assert count_iter(d) == 3;
+
+  let aa = 0;
+  let bb = 1.0;
+  let cc = true;
+  let dd = false;
+  let ee = null;
+  assert aa == 0;
+  assert bb == 1.0;
+  assert cc;
+  assert !dd;
+  assert ee == null;
+
+  // closure grammar
+  let x = func() {
+    return aa + bb;
+  };
+  assert x() == 1.0;
+}
+testing_expr_primary();
+
+// identifier prefixed expression
+func testing_expr_id_prefix() {
+  {
+    let a = [{
+      "b" : [1,2,3,
+        {
+          "c" : true
+        }
+      ]
+    }];
+    assert a.b[3].c;
+  }
+
+  {
+    let xx = [[[[]]]];
+    assert count_iter(xx) == 0 &&
+           conut_iter(xx[0]) == 0 &&
+           count_iter(xx[0][0]) == 0 &&
+           count_iter(xx[0][0][0]) == 0 &&
+           count_iter(xx[0][0][0][0]) == 0;
+
+  }
+
+  {
+    let a = [0, 1, {
+      "c" : [func() { return 100; }]
+    }];
+    assert a[2].c() == 100;
+  }
+}
+
+testing_expr_primary();
+
+// testing unary
+(func() {
+  let a = -1;
+  let b = -a;
+  let c = !true;
+  let d = !c;
+  assert a == -1;
+  assert b == 1;
+  assert !c;
+  assert d;
+})();
+
+// testing equality and comparison precendence
+(func() {
+  let a = 100;
+  let b = 20;
+  let c = a < 20 == false;
+  assert c;
+  assert a > 20 == true;
+})();
+
+// testing logic and rest
+(func() {
+  let a = 100;
+  let b = 200 + a;
+  assert a < b && true != false;
+  assert a < b == true && true;
+
+  {
+    let xxx = [0];
+    let invoker = func() {
+      xxx[0] = xxx[0] + 1;
+      return true;
+    };
+    assert !(false && invoker());
+    assert true || invoker();
+    assert xxx[0] == 0;
+  }
+
+  {
+    let xxx = [1];
+    let invoker = func() {
+      xxx[0] = xxx[0] + 1;
+      return true;
+    };
+    assert (true && invoker());
+    assert false || invoker();
+    assert xxx[0] == 3;
+  }
+})();
+
+// testing ternary
+{
+  let upv1 = 10;
+  let upv2 = 20;
+  let upv3 = 30;
+  (func() {
+    assert (upv1 + upv2 + upv3 >= 30 ? upv1 : upv2) == upv1;
+  })();
+}

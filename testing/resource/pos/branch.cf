@@ -1,0 +1,81 @@
+// basic branch
+{
+  let x = 0;
+  if x == 0 {
+    x = 1;
+  } else {
+    x = 2;
+  }
+  assert x == 1;
+}
+
+// branch without else/elif
+{
+  let x = 0;
+  if x % 2 == 0 {
+    x = 100;
+  }
+  assert x == 100;
+}
+
+// branch with elif
+{
+  let x = 0;
+  if x % 2 == 0 {
+    let y = 30;
+    if y == 30 {
+      let z = 20;
+      let e = 30;
+      if z + e == 50 {
+        x = 10;
+      } elif (z + 2 != 50) {
+        let a = 10;
+        let b = 20;
+        let c = 30;
+        let d = 40;
+        return a + b + c + d;
+      }
+    }
+  } else {
+    x = 10000;
+  }
+
+  assert x == 10;
+}
+
+{
+  let x = 100;
+  if x == 10 {
+  } elif (x == 20) {
+  } elif (x == 30) {
+  } elif (x == 40) {
+  } elif (x == 50) {
+  } elif (x == 60) {
+  } elif (x == 70) {
+  } elif (x == 100) {
+    x = 10;
+  }
+  assert x == 10;
+}
+
+{
+  let x = 10;
+  if x == 1 {
+  } else {
+    x = 20;
+  }
+  assert x == 20;
+}
+
+// local variables
+{
+  let x = 1;
+  if x == 1 {
+    let x = 20;
+    assert x == 20;
+  } else {
+    let y = 20;
+    assert y == 0;
+  }
+}
+

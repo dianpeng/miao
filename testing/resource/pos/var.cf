@@ -1,0 +1,37 @@
+
+// variable defined in nested lexical block will not interrupt the other one
+{
+  let y = 100;
+  {
+    {
+      {
+        {
+          {
+            {
+              let y = 0;
+              assert y == 0;
+            }
+          }
+        }
+      }
+    }
+  }
+  assert y == 100, "y == 100";
+}
+
+{
+  let y = 10;
+  {
+    let y = 20;
+    {
+      let y = 30;
+      {
+        let y = 40;
+        assert y == 40;
+      }
+      assert y == 30;
+    }
+    assert y == 20;
+  }
+  assert y == 10;
+}

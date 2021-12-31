@@ -1,6 +1,6 @@
 use std::cmp;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Lerror {
     pub description: String,
     pub column: u32,
@@ -9,7 +9,7 @@ pub struct Lerror {
 
 // lexer position, used to recover from the bytecode the actual source code for
 // diagnostic information.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Lpos {
     pub column: u32,
     pub line: u32,
@@ -115,6 +115,32 @@ pub enum Token {
     Real(f64),
     Int(i64),
     Id(String),
+
+    // String interpolation, ie template
+    // for template parsing, the lexer will need some coporation of the parser
+    // it will generate a StrTempStart to indicate that user can expect some
+    // string interpolation specialized token, ie Text and StrTempEnd. And
+    // Token ExprStart will be used to indicate the normal expression token
+    // interleaved inside of the string template. Notes, due to the fact that
+    // } has ambigious meaning here, it is the parser's responsibility to check
+    // whether the current token is a } to match the end of the expression end
+    // parsing. The parser needs to do greedy parsing of the expression and
+    // bailout from the expression parsing when the parser naturally ends and
+    // try to expect the current token to be }
+    //
+    // example as following :
+    //
+    //    `hello:${world}`
+    //
+    // 1) the backtick will yield Token::StrTempStart
+    // 2) the hello: will yield Token::Text
+    // 3) the ${ will yield Token::ExprStart
+    // 4) the  } will yield Token::ExprEnd
+    // 5) the backtick at last will yield Token::StrTempEnd
+    StrTempStart,
+    StrTempEnd,
+    ExprStart,
+    Text(String),
 }
 
 type Lresult = Result<Token, Lerror>;
@@ -135,6 +161,8 @@ pub struct Lexer {
     source: String,
     cursor: u32,
     offset: u32,
+    is_template: bool, // whether we are in parsing template mode or not.
+    is_template_expr: bool, // whether we are in the template's expression scope
     pub prev_token: Token,
 }
 
@@ -144,6 +172,8 @@ impl Lexer {
             source: String::from(src),
             cursor: 0,
             offset: 0,
+            is_template: false,
+            is_template_expr: false,
             prev_token: Token::Invalid,
         };
     }
@@ -606,15 +636,116 @@ impl Lexer {
         Lpos { line: l, column: c }
     }
 
-    // Trying to decode the next
     pub fn next(&mut self) -> Lresult {
+        if self.is_template {
+            return self.do_template();
+        } else {
+            return self.do_next();
+        }
+    }
+
+    // used by user to bailout from the template parsing to normal parsing
+    // when it sees a }
+    pub fn template_finish_expr(&mut self) {
+        assert!(self.is_template_expr);
+        assert!(self.is_template);
+        self.is_template_expr = false;
+    }
+
+    // Lexing in template mode, transition into this mode when the backtick is
+    // been scanned
+    fn do_template(&mut self) -> Lresult {
+        // if we are in template expression mode, then just let the normal
+        // lexer kicks in to generate the next token.
+        if self.is_template_expr {
+            return self.do_next();
+        }
+
+        // okay, we are in the template's text mode, so scananig the template
+        // text here.
+        let mut txt = String::new();
+        while !self.mv_eof() {
+            match self.next_cp() {
+                Some(v) => {
+                    match v {
+                        '$' => {
+                            // peek next character to see what's ahead
+                            match self.peek_next() {
+                                None => {
+                                    return self.eutf8();
+                                }
+                                Some(nc) => {
+                                    // check wether it is an escape
+                                    match nc {
+                                        '$' => {
+                                            txt.push('$');
+                                            self.mv_more(1);
+                                            continue;
+                                        }
+                                        '`' => {
+                                            txt.push('`');
+                                            self.mv_more(1);
+                                            continue;
+                                        }
+                                        '{' => {
+                                            if txt.len() != 0 {
+                                                self.putback();
+                                                break;
+                                            } else {
+                                                self.mv_more(1);
+                                                assert!(!self.is_template_expr);
+                                                self.is_template_expr = true;
+                                                return self
+                                                    .t(Token::ExprStart);
+                                            }
+                                        }
+                                        _ => (),
+                                    };
+                                }
+                            };
+                            txt.push('$');
+                        }
+                        '`' => {
+                            if txt.len() != 0 {
+                                self.putback();
+                                break;
+                            } else {
+                                // switch from string template mode back to normal
+                                // lexing mode
+                                self.is_template_expr = false;
+                                self.is_template = false;
+                                return self.t(Token::StrTempEnd);
+                            }
+                        }
+                        t @ _ => {
+                            txt.push(t);
+                        }
+                    };
+                }
+                _ => return self.eutf8(),
+            };
+        }
+
+        if txt.len() == 0 {
+            return self.err("invalid string template, early EOF");
+        } else {
+            return self.t(Token::Text(txt));
+        }
+    }
+
+    // Trying to decode the next
+    fn do_next(&mut self) -> Lresult {
         while !self.mv_eof() {
             match self.next_cp() {
                 Some(v) => {
                     // token main loops
                     match v {
                         '\n' | '\r' | '\t' | ' ' => (),
-
+                        '`' => {
+                            assert!(!self.is_template);
+                            self.is_template = true;
+                            return self.t(Token::StrTempStart);
+                        }
                         '+' => {
                             return self.p2('=', Token::Add, Token::AssignAdd)
                         }
@@ -704,6 +835,13 @@ impl Lexer {
         }
 
         return self.t(Token::Eof);
+    }
+
+    pub fn lex_template(&self) -> bool {
+        return self.is_template;
+    }
+    pub fn lex_template_expr(&self) -> bool {
+        return self.is_template_expr;
     }
 
     // other utility
@@ -911,6 +1049,94 @@ mod tests {
 
         for (input, expect) in mapping.iter() {
             match_tokens(input, expect);
+        }
+    }
+
+    #[test]
+    fn test_string_template() {
+        match_tokens(
+            "`abcd`",
+            &[
+                Token::StrTempStart,
+                Token::Text("abcd".to_string()),
+                Token::StrTempEnd,
+                Token::Eof,
+            ],
+        );
+        match_tokens(
+            "`abcd$`$${}`",
+            &[
+                Token::StrTempStart,
+                Token::Text("abcd`${}".to_string()),
+                Token::StrTempEnd,
+                Token::Eof,
+            ],
+        );
+        match_tokens(
+            "`abcd${",
+            &[
+                Token::StrTempStart,
+                Token::Text("abcd".to_string()),
+                Token::ExprStart,
+                Token::Eof,
+            ],
+        );
+        match_tokens(
+            "`abcd${a.b.c+-",
+            &[
+                Token::StrTempStart,
+                Token::Text("abcd".to_string()),
+                Token::ExprStart,
+                Token::Id("a".to_string()),
+                Token::Dot,
+                Token::Id("b".to_string()),
+                Token::Dot,
+                Token::Id("c".to_string()),
+                Token::Add,
+                Token::Sub,
+                Token::Eof,
+            ],
+        );
+        // resume from string template lexing
+        {
+            let input = "`abc${a.b}cd`+";
+            let mut lexer = Lexer::new(input);
+            assert_eq!(lexer.next().unwrap(), Token::StrTempStart);
+            assert_eq!(lexer.next().unwrap(), Token::Text("abc".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::ExprStart);
+            assert_eq!(lexer.next().unwrap(), Token::Id("a".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::Dot);
+            assert_eq!(lexer.next().unwrap(), Token::Id("b".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::RBra);
+            lexer.template_finish_expr();
+            assert_eq!(lexer.next().unwrap(), Token::Text("cd".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::StrTempEnd);
+            assert_eq!(lexer.next().unwrap(), Token::Add);
+            assert_eq!(lexer.next().unwrap(), Token::Eof);
+        }
+        {
+            let input = "`${a}${b}${c}`";
+            let mut lexer = Lexer::new(input);
+            assert_eq!(lexer.next().unwrap(), Token::StrTempStart);
+
+            assert_eq!(lexer.next().unwrap(), Token::ExprStart);
+            assert_eq!(lexer.next().unwrap(), Token::Id("a".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::RBra);
+            lexer.template_finish_expr();
+
+            assert_eq!(lexer.next().unwrap(), Token::ExprStart);
+            assert_eq!(lexer.next().unwrap(), Token::Id("b".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::RBra);
+            lexer.template_finish_expr();
+
+            assert_eq!(lexer.next().unwrap(), Token::ExprStart);
+            assert_eq!(lexer.next().unwrap(), Token::Id("c".to_string()));
+            assert_eq!(lexer.next().unwrap(), Token::RBra);
+            lexer.template_finish_expr();
+
+            assert_eq!(lexer.next().unwrap(), Token::StrTempEnd);
+
+            assert_eq!(lexer.next().unwrap(), Token::Eof);
         }
     }
 }

@@ -1,0 +1,28 @@
+/**
+ * string template
+ */
+
+{
+  let a = ``;
+  assert a == ``;
+  assert a == "";
+}
+
+{
+  let a = `abcd`;
+  assert a == `abcd`;
+  assert a == "abcd";
+}
+
+{
+  let a = "a";
+  let b = "xx";
+  let c = 20;
+  assert `${a}${b}${c}` == "axx20";
+}
+
+{
+  let a = "a";
+  let b = 20;
+  assert `result: ${a}${b}yeah!` == "result: a20yeah!";
+}

@@ -1883,6 +1883,58 @@ impl Parser {
         };
     }
 
+    // parsing string template, we just doing concatenation on the value
+    // stack
+    fn parse_string_template(&mut self) -> bool {
+        let mut count = 0;
+        self.next();
+
+        loop {
+            match self.token.clone() {
+                Token::StrTempEnd => {
+                    self.next();
+                    break;
+                }
+
+                Token::Text(data) => {
+                    self.emit_str(data);
+                    self.next();
+                }
+
+                Token::ExprStart => {
+                    self.next();
+                    if !self.parse_expression() {
+                        return false;
+                    }
+                    if !self.expect_current(Token::RBra) {
+                        return false;
+                    }
+                    self.l.template_finish_expr();
+                    self.next();
+                }
+                _ => {
+                    return self.grammar_error(&format!(
+                        "unexpected token {:?} in string template",
+                        self.token
+                    ));
+                }
+            };
+
+            count += 1;
+        }
+
+        if count == 0 {
+            // no string on the stack, so we just emit a dummy string
+            self.emit_str("".to_string());
+        } else {
+            // okay, emit ConStr to concate all counted string on the stack
+            self.bc().emit_d(Bytecode::ConStr(count), self.dbg());
+        }
+
+        assert!(!self.l.lex_template());
+        return true;
+    }
+
     fn parse_atomic(&mut self) -> bool {
         match self.token.clone() {
             Token::Int(v) => {
@@ -1908,6 +1960,9 @@ impl Parser {
             Token::Str(v) => {
                 self.emit_str(v);
                 self.next();
+            }
+            Token::StrTempStart => {
+                return self.parse_string_template();
             }
             Token::LSqr => return self.parse_list(),
             Token::LBra => return self.parse_object(),

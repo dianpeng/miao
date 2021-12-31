@@ -38,6 +38,7 @@ pub enum Bytecode {
     LoadNull,
     LoadTrue,
     LoadFalse,
+    ConStr(u32),
 
     // Upvalue
     LoadUpvalue(u32),

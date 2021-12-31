@@ -201,6 +201,43 @@ impl Exec {
         let value = Conversion::to_boolean(&v, run);
         return self.una_result(run, Handle::Boolean(value));
     }
+
+    fn con_str(&mut self, num: u32, run: &mut Runptr) -> bool {
+        let mut out = String::new();
+        {
+            let b = run.borrow();
+            let stack = &b.stack;
+            let len = stack.len() as u32;
+            let mut start = len - num;
+
+            while start < len {
+                let v = stack[start as usize].clone();
+                match Conversion::to_rust_string(&v) {
+                    Option::Some(s) => {
+                        out.push_str(&s);
+                    }
+                    Option::None => {
+                        self.error(format!(
+                            "cannot convert {} to string",
+                            handle_type_name(&v),
+                        ));
+                        return false;
+                    }
+                };
+
+                start += 1;
+            }
+        }
+
+        self.pop_n(num as usize, run);
+        {
+            let str =
+                run.borrow_mut().g.borrow_mut().heap.new_string_handle(out);
+            self.push_val(run, str);
+        }
+        return true;
+    }
+
     fn load_int(&mut self, a0: u32, run: &mut Runptr) -> bool {
         let v = run.borrow().rcall_ref().borrow().proto.code.load_int(a0);
         self.push_val(run, Handle::Int(v));
@@ -328,17 +365,16 @@ impl Exec {
             Handle::Object(v) => {
                 {
                     let mut mut_ref = run.borrow_mut();
+                    let gptr = Gptr::clone(&mut_ref.g);
+
                     let stack = &mut mut_ref.stack;
                     let len = stack.len() as u32;
                     let mut idx = len - a0 * 2;
-                    let mut dup_run = Runptr::clone(run);
 
                     while idx < len {
-                        match Conversion::to_string(
-                            &mut dup_run,
-                            &stack[idx as usize],
-                        ) {
-                            Option::Some(key) => {
+                        match Conversion::to_rust_string(&stack[idx as usize]) {
+                            Option::Some(kk) => {
+                                let key = gptr.borrow_mut().heap.new_string(kk);
                                 v.borrow_mut().add(
                                     &key,
                                     stack[(idx + 1) as usize].clone(),
@@ -1074,6 +1110,7 @@ impl Exec {
                     Bytecode::LoadInt(i) => self.load_int(i, run),
                     Bytecode::LoadReal(i) => self.load_real(i, run),
                     Bytecode::LoadString(i) => self.load_string(i, run),
+                    Bytecode::ConStr(i) => self.con_str(i, run),
                     Bytecode::LoadFunction(i) => {
                         self.load_function(i, run, offset)
                     }
@@ -1252,7 +1289,13 @@ impl Exec {
 
                     Bytecode::Assert1 => {
                         if !self.assert1(run) {
-                            self.err("assertion failed!");
+                            let lpos = current.borrow().proto.code.debug
+                                [(pc - 1) as usize]
+                                .clone();
+                            self.error(format!(
+                                "assertion failed at({}:{})!",
+                                lpos.column, lpos.line
+                            ));
                             false
                         } else {
                             true
@@ -1261,7 +1304,13 @@ impl Exec {
 
                     Bytecode::Assert2 => match self.assert2(run) {
                         Option::Some(v) => {
-                            self.error(v);
+                            let lpos = current.borrow().proto.code.debug
+                                [(pc - 1) as usize]
+                                .clone();
+                            self.error(format!(
+                                "asertion failed at({}:{})]: {}",
+                                lpos.column, lpos.line, v
+                            ));
                             false
                         }
                         _ => true,
@@ -1836,39 +1885,39 @@ impl Conversion {
         };
     }
 
-    pub fn to_string(run: &mut Runptr, h: &Handle) -> Option<StrRef> {
+    pub fn to_rust_string(h: &Handle) -> Option<String> {
         match h {
             Handle::Int(v) => {
-                return Option::Some(
-                    run.borrow().g.borrow_mut().heap.new_string(v.to_string()),
-                );
+                return Option::Some(v.to_string());
             }
             Handle::Real(v) => {
-                return Option::Some(
-                    run.borrow().g.borrow_mut().heap.new_string(v.to_string()),
-                );
+                return Option::Some(v.to_string());
             }
             Handle::Boolean(v) => {
                 if *v {
-                    return Option::Some(
-                        run.borrow().g.borrow_mut().heap.new_str("true"),
-                    );
+                    return Option::Some("ture".to_string());
                 } else {
-                    return Option::Some(
-                        run.borrow().g.borrow_mut().heap.new_str("false"),
-                    );
+                    return Option::Some("false".to_string());
                 }
             }
             Handle::Null => {
-                return Option::Some(
-                    run.borrow().g.borrow_mut().heap.new_str("null"),
-                );
+                return Option::Some("null".to_string());
             }
             Handle::Str(v) => {
-                return Option::Some(StrRef::clone(v));
+                return Option::Some(v.borrow().string.clone());
             }
             _ => return Option::None,
         };
+    }
+
+    pub fn to_string(run: &mut Runptr, h: &Handle) -> Option<StrRef> {
+        let xx = match Conversion::to_rust_string(h) {
+            Option::Some(s) => s,
+            _ => return Option::None,
+        };
+
+        let strref = run.borrow().g.borrow_mut().heap.new_string(xx);
+        return Option::Some(strref);
     }
 
     pub fn to_boolean(h: &Handle, r: &mut Runptr) -> bool {
@@ -2233,14 +2282,6 @@ mod exec_tests {
 
     #[test]
     fn test_global_var() {
-        dump_code(
-            r#"
-g = 10;
-b = g;
-let x = 20;
-return b + x;
-"#,
-        );
         assert_eq!(
             runstr_int(
                 r#"
@@ -3132,7 +3173,6 @@ return count(r) == 4 &&
        r[2] == false &&
        r[3] == null;
     "#;
-        dump_code(code);
         assert_eq!(runstr_bool(code), true);
     }
 

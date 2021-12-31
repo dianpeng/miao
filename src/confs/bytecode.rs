@@ -99,6 +99,8 @@ pub enum Bytecode {
     Assert1,
     Assert2,
     Trace(u32),
+    Typeof,
+    Sizeof,
     Halt,
 
     // Others

@@ -104,6 +104,8 @@ pub enum Token {
     Assert, // assert
     Halt,   // halt
     Trace,  // trace
+    Typeof, // typeof
+    Sizeof, // sizeof
 
     // Constant
     Str(String),
@@ -562,7 +564,7 @@ impl Lexer {
     }
 
     fn keyword_or_id(&mut self, leading: char) -> Lresult {
-        let keywords: [(&[char], Token); 16] = [
+        let keywords: [(&[char], Token); 18] = [
             (&['t', 'r', 'u', 'e'], Token::True),
             (&['f', 'a', 'l', 's', 'e'], Token::False),
             (&['f', 'u', 'n', 'c'], Token::Func),
@@ -580,6 +582,8 @@ impl Lexer {
             (&['h', 'a', 'l', 't'], Token::Halt),
             (&['a', 's', 's', 'e', 'r', 't'], Token::Assert),
             (&['t', 'r', 'a', 'c', 'e'], Token::Trace),
+            (&['t', 'y', 'p', 'e', 'o', 'f'], Token::Typeof),
+            (&['s', 'i', 'z', 'e', 'o', 'f'], Token::Sizeof),
         ];
 
         for (slice, token) in keywords.iter() {

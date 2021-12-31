@@ -181,6 +181,21 @@ impl Exec {
             Result::Ok(v) => self.una_result(run, v),
         };
     }
+    fn typeof_(&mut self, run: &mut Runptr) -> bool {
+        let v = self.top0(run);
+        return match Unary::typeof_(v, run) {
+            Result::Err(v) => self.interp_err(v),
+            Result::Ok(v) => self.una_result(run, v),
+        };
+    }
+    fn sizeof(&mut self, run: &mut Runptr) -> bool {
+        let v = self.top0(run);
+        return match Unary::sizeof(v, run) {
+            Result::Err(v) => self.interp_err(v),
+            Result::Ok(v) => self.una_result(run, v),
+        };
+    }
+
     fn boolean(&mut self, run: &mut Runptr) -> bool {
         let v = self.top0(run);
         let value = Conversion::to_boolean(&v, run);
@@ -1052,6 +1067,8 @@ impl Exec {
                     Bytecode::Le => self.le(run),
                     Bytecode::Not => self.not(run),
                     Bytecode::Neg => self.neg(run),
+                    Bytecode::Typeof => self.typeof_(run),
+                    Bytecode::Sizeof => self.sizeof(run),
                     Bytecode::Boolean => self.boolean(run),
 
                     Bytecode::LoadInt(i) => self.load_int(i, run),
@@ -1895,6 +1912,19 @@ impl Unary {
     pub fn not(v: Handle, run: &mut Runptr) -> Result<Handle, Verror> {
         return Result::Ok(Handle::Boolean(!Conversion::to_boolean(&v, run)));
     }
+
+    pub fn typeof_(v: Handle, run: &mut Runptr) -> Result<Handle, Verror> {
+        return Result::Ok(
+            run.borrow_mut()
+                .g
+                .borrow_mut()
+                .heap
+                .new_str_handle(handle_type_name(&v)),
+        );
+    }
+    pub fn sizeof(v: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+        return Result::Ok(Handle::Int(handle_sizeof(&v) as i64));
+    }
 }
 
 #[cfg(test)]
@@ -2450,6 +2480,9 @@ return foo()()()()();
         fn gc_finalize(&mut self) {}
         fn debug_info(&self) -> String {
             return "[my-native]".to_string();
+        }
+        fn sizeof(&self) -> usize {
+            1
         }
     }
 

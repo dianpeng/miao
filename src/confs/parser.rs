@@ -1840,6 +1840,14 @@ impl Parser {
                 bc = Option::Some(Bytecode::Not);
                 self.next();
             }
+            Token::Typeof => {
+                bc = Option::Some(Bytecode::Typeof);
+                self.next();
+            }
+            Token::Sizeof => {
+                bc = Option::Some(Bytecode::Sizeof);
+                self.next();
+            }
             _ => (),
         };
 

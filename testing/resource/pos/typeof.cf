@@ -1,0 +1,45 @@
+// builtin primitive's typeof usage
+
+func is_int(x) {
+  return typeof x == "int";
+}
+
+func is_real(x) {
+  return typeof x == "real";
+}
+
+func is_boolean(x) {
+  return typeof x == "boolean";
+}
+
+func is_null(x) {
+  return typeof x == "null";
+}
+
+func is_string(x) {
+  return typeof x == "string";
+}
+
+func is_list(x) {
+  return typeof x == "list";
+}
+
+func is_object(x) {
+  return typeof x == "object";
+}
+
+func is_function(x) {
+  return typeof x == "function";
+}
+
+assert is_int(1), '1';
+assert !is_int(1.1), '2';
+assert is_real(1.0), '3';
+assert !is_real(1), '4';
+assert is_boolean(true) && is_boolean(false), '5';
+assert is_null(null), '6';
+assert is_string(""), '7';
+assert is_list([]), '8';
+assert is_object({}), '9';
+assert is_function(is_real), '10';
+

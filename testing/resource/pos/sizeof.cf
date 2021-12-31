@@ -1,0 +1,13 @@
+assert sizeof 1 == 1;
+assert sizeof 1.0 == 1;
+assert sizeof true == 1;
+assert sizeof null == 1;
+assert sizeof (func() {}) == 1;
+
+assert sizeof "" == 0;
+
+// this is the character size of the string not the byte length
+assert sizeof "abcd" == 4;
+
+assert sizeof [] == 0;
+assert sizeof [1, 2] == 2;

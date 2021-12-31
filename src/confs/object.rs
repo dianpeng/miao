@@ -233,6 +233,9 @@ impl HRef for Run {
     fn debug_info(&self) -> String {
         return "[run]".to_string();
     }
+    fn sizeof(&self) -> usize {
+        return 1;
+    }
 }
 
 // A basic object model for the small scripting language we want to implement.
@@ -357,6 +360,21 @@ pub fn handle_type_name(v: &Handle) -> &str {
         Handle::Function(_) => "function",
         Handle::NFunction(_) => "native_function",
         Handle::Iter(_) => "iterator",
+    };
+}
+
+pub fn handle_sizeof(v: &Handle) -> usize {
+    return match v {
+        Handle::Int(_) => 1,
+        Handle::Real(_) => 1,
+        Handle::Boolean(_) => 1,
+        Handle::Null => 1,
+        Handle::Str(v) => v.borrow().sizeof(),
+        Handle::List(v) => v.borrow().sizeof(),
+        Handle::Object(v) => v.borrow().sizeof(),
+        Handle::Function(v) => v.borrow().sizeof(),
+        Handle::NFunction(v) => v.borrow().sizeof(),
+        Handle::Iter(v) => v.borrow().sizeof(),
     };
 }
 
@@ -505,8 +523,9 @@ pub trait HRef {
     // since we are using the reference counting in rust to keep the object alive
     fn gc_finalize(&mut self);
 
-    // debugging printing usage
+    // property
     fn debug_info(&self) -> String;
+    fn sizeof(&self) -> usize;
 
     // --------------------------------------------------------------------------
     // Convinient methods
@@ -576,6 +595,9 @@ impl HRef for Obj {
     }
     fn debug_info(&self) -> String {
         return "[object]".to_string();
+    }
+    fn sizeof(&self) -> usize {
+        return self.index.len();
     }
 }
 
@@ -675,6 +697,9 @@ impl HRef for List {
     fn debug_info(&self) -> String {
         return "[list]".to_string();
     }
+    fn sizeof(&self) -> usize {
+        return self.value.len();
+    }
 }
 
 impl List {
@@ -708,6 +733,7 @@ impl List {
 #[derive(PartialEq, Eq)]
 pub struct Str {
     pub string: String, // the actual string value
+    pub char_size : usize, // character size
     gc: GC,             // gc field
 }
 
@@ -720,8 +746,10 @@ pub struct StrPool {
 
 impl Str {
     pub fn new(s: String) -> StrRef {
+        let cs = s.chars().count();
         Rc::new(RefCell::new(Str {
             string: s,
+            char_size : cs,
             gc: GC::nil(),
         }))
     }
@@ -800,9 +828,11 @@ impl HRef for Str {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
-
     fn debug_info(&self) -> String {
         return self.string.clone();
+    }
+    fn sizeof(&self) -> usize {
+        return self.char_size;
     }
 }
 
@@ -860,6 +890,9 @@ impl HRef for Function {
             self.proto.debug_info(),
             self.upvalue.len()
         )
+    }
+    fn sizeof(&self) -> usize {
+        return 1;
     }
 }
 
@@ -935,9 +968,11 @@ impl HRef for StrIter {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
-
     fn debug_info(&self) -> String {
         return "[string-iterator]".to_string();
+    }
+    fn sizeof(&self) -> usize {
+        return 1;
     }
 }
 
@@ -986,6 +1021,9 @@ impl HRef for ListIter {
     fn gc_finalize(&mut self) {}
     fn debug_info(&self) -> String {
         return "[list-iterator]".to_string();
+    }
+    fn sizeof(&self) -> usize {
+        return 1;
     }
 }
 
@@ -1040,6 +1078,9 @@ impl HRef for ObjIter {
     fn gc_finalize(&mut self) {}
     fn debug_info(&self) -> String {
         return "[object-iterator]".to_string();
+    }
+    fn sizeof(&self) -> usize {
+        return 1;
     }
 }
 

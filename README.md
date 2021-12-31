@@ -184,5 +184,6 @@ The code is in public domain. Use it at your own risk!
 ## Caveats
 
 This is a project that I write mainly for learning Rust in the last two weaks. The code is not 
-pollish and BUGS are expected. Since I already add many tests into the project, it does already have some stability and usability. I will try to spend some spare cycle to pollish it and make it a 
-more mature project but currently I cannot afford too much efforts on it.
+pollished and BUGS are expected. Since I already add many tests into the project, it does have
+some stability and usability. I will try to spend some spare cycle to pollish it and make it a
+more mature project.

@@ -61,7 +61,16 @@ pub enum Token {
     And,
     Or,
 
+    // Assign
     Assign,
+
+    // Aggregation Assign
+    AssignAdd,
+    AssignSub,
+    AssignMul,
+    AssignDiv,
+    AssignMod,
+    AssignPow,
 
     // unary
     Not,
@@ -602,9 +611,15 @@ impl Lexer {
                     match v {
                         '\n' | '\r' | '\t' | ' ' => (),
 
-                        '+' => return self.t(Token::Add),
-                        '-' => return self.t(Token::Sub),
-                        '*' => return self.t(Token::Mul),
+                        '+' => {
+                            return self.p2('=', Token::Add, Token::AssignAdd)
+                        }
+                        '-' => {
+                            return self.p2('=', Token::Sub, Token::AssignSub)
+                        }
+                        '*' => {
+                            return self.p2('=', Token::Mul, Token::AssignMul)
+                        }
                         '/' => {
                             // parsing comment or division
                             match self.peek_next() {
@@ -628,11 +643,17 @@ impl Lexer {
                                         };
                                         continue;
                                     }
+                                    if vv == '=' {
+                                        self.mv_more(1);
+                                        return self.t(Token::AssignDiv);
+                                    }
                                     return self.t(Token::Div);
                                 }
                             };
                         }
-                        '%' => return self.t(Token::Mod),
+                        '%' => {
+                            return self.p2('=', Token::Mod, Token::AssignMod)
+                        }
                         '|' => return self.tt('|', Token::Or),
                         '&' => return self.tt('&', Token::And),
                         '^' => return self.t(Token::Pow),
@@ -679,6 +700,18 @@ impl Lexer {
         }
 
         return self.t(Token::Eof);
+    }
+
+    // other utility
+    pub fn is_agg_assign(tk: &Token) -> bool {
+        match tk {
+            Token::AssignAdd
+            | Token::AssignSub
+            | Token::AssignMul
+            | Token::AssignDiv
+            | Token::AssignMod => return true,
+            _ => return false,
+        };
     }
 }
 

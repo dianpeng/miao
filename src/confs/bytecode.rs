@@ -65,6 +65,7 @@ pub enum Bytecode {
     // Stack manipulation
     Pop,
     PopN(u32),
+    Dup,
     Load(u32),
     Store(u32),
     PushN(u32),

@@ -444,6 +444,11 @@ impl Exec {
         stack.truncate(left);
         return true;
     }
+    fn dup(&mut self, run: &mut Runptr) -> bool {
+        let tos = self.top0(run);
+        self.push_val(run, tos);
+        return true;
+    }
     fn push_n(&mut self, len: usize, run: &mut Runptr) -> bool {
         let mut b = run.borrow_mut();
         let stack = &mut b.stack;
@@ -1079,6 +1084,7 @@ impl Exec {
 
                     Bytecode::Pop => self.pop(run),
                     Bytecode::PopN(i) => self.pop_n(i as usize, run),
+                    Bytecode::Dup => self.dup(run),
                     Bytecode::PushN(i) => {
                         let mut r = true;
                         if i != 0 {
@@ -1774,7 +1780,7 @@ impl Comparison {
 
 impl Conversion {
     // used for generating the assert failure string, which should never failed
-    pub fn debug_string(h: &Handle, run: &mut Runptr) -> String {
+    pub fn debug_string(h: &Handle, _: &mut Runptr) -> String {
         match h {
             Handle::Int(v) => {
                 return v.to_string();
@@ -1793,22 +1799,22 @@ impl Conversion {
                 return "null".to_string();
             }
             Handle::Str(v) => {
-                return v.borrow().string.to_string();
+                return v.borrow().debug_info();
             }
             Handle::Function(v) => {
                 return v.borrow().debug_info();
             }
             Handle::NFunction(v) => {
-                return v.borrow().debug_info(run);
+                return v.borrow().debug_info();
             }
-            Handle::List(_) => {
-                return "list".to_string();
+            Handle::List(v) => {
+                return v.borrow().debug_info();
             }
-            Handle::Object(_) => {
-                return "object".to_string();
+            Handle::Object(v) => {
+                return v.borrow().debug_info();
             }
-            Handle::Iter(_) => {
-                return "iter".to_string();
+            Handle::Iter(v) => {
+                return v.borrow().debug_info();
             }
         };
     }
@@ -2442,6 +2448,9 @@ return foo()()()()();
             self.set_gc_mark_black();
         }
         fn gc_finalize(&mut self) {}
+        fn debug_info(&self) -> String {
+            return "[my-native]".to_string();
+        }
     }
 
     #[test]

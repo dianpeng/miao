@@ -1,0 +1,45 @@
+func len(x) {
+  let sum = 0;
+  for _ in x {
+    sum += 1;
+  }
+  return sum;
+}
+
+{
+  // basic
+  let a = [];
+  b = a;
+
+  b[0] = 10;
+  b[100] = 1;
+  b[1] = 2;
+  b[2] = 2;
+
+  assert len(b) == 101;
+}
+
+{
+  // aggregate assignment
+  let a = 1;
+  a += 1;
+  trace "A: ", a;
+  assert a == 2, 'aaa';
+
+  a -= 1;
+  assert a == 1, 'bbb';
+
+  a *= 1;
+  assert a == 1, 'ccc';
+
+  a /= 1;
+  assert a == 1, 'ddd';
+
+  a = 100;
+  a %= 3;
+  assert a == (100 % 3);
+}
+
+let a = 10;
+let b = a;
+assert b == 10;

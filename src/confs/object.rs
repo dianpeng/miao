@@ -230,6 +230,9 @@ impl HRef for Run {
     fn gc_finalize(&mut self) {
         self.stack.clear();
     }
+    fn debug_info(&self) -> String {
+        return "[run]".to_string();
+    }
 }
 
 // A basic object model for the small scripting language we want to implement.
@@ -502,6 +505,9 @@ pub trait HRef {
     // since we are using the reference counting in rust to keep the object alive
     fn gc_finalize(&mut self);
 
+    // debugging printing usage
+    fn debug_info(&self) -> String;
+
     // --------------------------------------------------------------------------
     // Convinient methods
     fn is_str(&self) -> bool {
@@ -531,11 +537,6 @@ pub trait NFunc: HRef {
         argcount: u32,
         run: &mut Runptr,
     ) -> Result<Vresult, Verror>;
-
-    // debug usage
-    fn debug_info(&self, _: &mut Runptr) -> String {
-        return "[NFunction(N/A)]".to_string();
-    }
 }
 
 // The issue is in rust, storing the pair into the HashMap and maintain a easy
@@ -572,6 +573,9 @@ impl HRef for Obj {
     }
     fn gc_finalize(&mut self) {
         self.index.clear();
+    }
+    fn debug_info(&self) -> String {
+        return "[object]".to_string();
     }
 }
 
@@ -656,7 +660,6 @@ impl HRef for List {
     fn gc_ref_mut(&mut self) -> &mut GC {
         return &mut self.gc;
     }
-
     fn gc_mark(&mut self) {
         if !self.move_gc_mark_grey() {
             return;
@@ -668,6 +671,9 @@ impl HRef for List {
     }
     fn gc_finalize(&mut self) {
         self.value.clear();
+    }
+    fn debug_info(&self) -> String {
+        return "[list]".to_string();
     }
 }
 
@@ -684,7 +690,7 @@ impl List {
     pub fn assign(&mut self, x: u32, h: Handle) {
         let expect_len = (x + 1) as usize;
         if expect_len > self.value.len() {
-          self.value.resize((x + 1) as usize, Handle::Null);
+            self.value.resize((x + 1) as usize, Handle::Null);
         }
         self.value[x as usize] = h;
     }
@@ -794,6 +800,10 @@ impl HRef for Str {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
+
+    fn debug_info(&self) -> String {
+        return self.string.clone();
+    }
 }
 
 // function, ie the runtime materialization of prototype object. Notes, the
@@ -819,15 +829,6 @@ impl Function {
     pub fn set_upvalue(&mut self, idx: u32, h: Handle) {
         self.upvalue[idx as usize] = h;
     }
-
-    // used to generate runtime diagnostic information here
-    pub fn debug_info(&self) -> String {
-        format!(
-            "{}: [upvalue={}]",
-            self.proto.debug_info(),
-            self.upvalue.len()
-        )
-    }
 }
 
 impl HRef for Function {
@@ -851,6 +852,14 @@ impl HRef for Function {
     }
     fn gc_finalize(&mut self) {
         self.upvalue.clear();
+    }
+    // used to generate runtime diagnostic information here
+    fn debug_info(&self) -> String {
+        format!(
+            "{}: [upvalue={}]",
+            self.proto.debug_info(),
+            self.upvalue.len()
+        )
     }
 }
 
@@ -926,6 +935,10 @@ impl HRef for StrIter {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
+
+    fn debug_info(&self) -> String {
+        return "[string-iterator]".to_string();
+    }
 }
 
 impl StrIter {
@@ -971,6 +984,9 @@ impl HRef for ListIter {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
+    fn debug_info(&self) -> String {
+        return "[list-iterator]".to_string();
+    }
 }
 
 impl ListIter {
@@ -1022,6 +1038,9 @@ impl HRef for ObjIter {
         self.set_gc_mark_black();
     }
     fn gc_finalize(&mut self) {}
+    fn debug_info(&self) -> String {
+        return "[object-iterator]".to_string();
+    }
 }
 
 impl ObjIter {

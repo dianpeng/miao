@@ -2,17 +2,17 @@
 
 # Introduction
 
-1.1 Langauage Feature
-  1.1.1 Curly bracket style language
-  1.1.2 first order function
-  1.1.3 JavaScript style object model but no prototype inheritance
-  1.1.4 Closure and upvalue capture regardless of lexical scope
+- Langauage Feature
+  - Curly bracket style language
+  - First order function
+  - JavaScript style object model but no prototype inheritance
+  - Closure and upvalue capture regardless of lexical scope
 
-1.2 Implementation Feature
-  1.2.1 One pass bytecode generation
-  1.2.2 Bytecode style interpreter
-  1.2.3 Simple object model with STW GC
-  1.2.4 Implementation with only safe Rust
+- Implementation Feature
+  - One pass bytecode generation
+  - Bytecode style interpreter
+  - Simple object model with STW GC
+  - Implementation with only safe Rust
 
 # How does it look like ?
 

@@ -500,6 +500,15 @@ impl Exec {
         self.push_val(run, tos);
         return true;
     }
+    fn dup2(&mut self, run: &mut Runptr) -> bool {
+        let t0 = self.top0(run);
+        let t1 = self.top1(run);
+
+        // order matters
+        self.push_val(run, t1);
+        self.push_val(run, t0);
+        return true;
+    }
     fn push_n(&mut self, len: usize, run: &mut Runptr) -> bool {
         let mut b = run.borrow_mut();
         let stack = &mut b.stack;
@@ -1139,6 +1148,7 @@ impl Exec {
                     Bytecode::Pop => self.pop(run),
                     Bytecode::PopN(i) => self.pop_n(i as usize, run),
                     Bytecode::Dup => self.dup(run),
+                    Bytecode::Dup2 => self.dup2(run),
                     Bytecode::PushN(i) => {
                         let mut r = true;
                         if i != 0 {
@@ -1703,9 +1713,11 @@ impl Arithmetic {
             }
         }
 
-        return Result::Err(Verror::from_str(
-            "pow needs both operand to be integer".to_string(),
-        ));
+        return Result::Err(Verror::from_str(format!(
+            "pow needs both operand to be numbers, but got type {} and {}",
+            handle_type_name(&l),
+            handle_type_name(&r)
+        )));
     }
 }
 

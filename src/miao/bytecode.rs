@@ -67,6 +67,7 @@ pub enum Bytecode {
     Pop,
     PopN(u32),
     Dup,
+    Dup2,
     Load(u32),
     Store(u32),
     PushN(u32),
@@ -256,6 +257,7 @@ impl BytecodeArray {
 
     // Function to mutate the recently added instruction
     pub fn pop_last(&mut self) -> Bytecode {
+        self.debug.pop();
         self.array.pop().unwrap()
     }
 

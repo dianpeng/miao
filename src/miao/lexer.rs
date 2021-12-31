@@ -791,7 +791,9 @@ impl Lexer {
                         }
                         '|' => return self.tt('|', Token::Or),
                         '&' => return self.tt('&', Token::And),
-                        '^' => return self.t(Token::Pow),
+                        '^' => {
+                            return self.p2('=', Token::Pow, Token::AssignPow)
+                        }
                         '<' => return self.p2('=', Token::Lt, Token::Le),
                         '>' => return self.p2('=', Token::Gt, Token::Ge),
                         '=' => return self.p2('=', Token::Assign, Token::Eq),
@@ -851,6 +853,7 @@ impl Lexer {
             | Token::AssignSub
             | Token::AssignMul
             | Token::AssignDiv
+            | Token::AssignPow
             | Token::AssignMod => return true,
             _ => return false,
         };

@@ -1,0 +1,40 @@
+/**
+ ** some simple function testing case
+ **/
+
+// global function, ie the function is been stored into the global table and can
+// be used anywhere. The name of the function can also be obtained in the rust
+// api for calling back as well.
+func count_iter_size(l) {
+  let sum = 0;
+  for x in l {
+    sum = sum + 1;
+  }
+  return sum;
+}
+
+{
+  let foo = func() {
+    return func(xx) {
+      // should be able to get the count_iter_size function
+      return count_iter_size(xx);
+    };
+  };
+
+  assert foo()([]) == 0;
+}
+
+// capture function as upvalue for later usage is also supported
+{
+  let foo = func() {
+    let bar = func(xx) {
+      return count_iter_size(xx);
+    };
+
+    return func(lhs, rhs) {
+      return bar(lhs) + bar(rhs);
+    };
+  };
+
+  assert foo()([2], {'a' : null}) == 2;
+}

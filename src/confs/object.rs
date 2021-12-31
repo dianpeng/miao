@@ -682,7 +682,10 @@ impl List {
         self.value.push(h);
     }
     pub fn assign(&mut self, x: u32, h: Handle) {
-        self.value.resize((x + 1) as usize, Handle::Null);
+        let expect_len = (x + 1) as usize;
+        if expect_len > self.value.len() {
+          self.value.resize((x + 1) as usize, Handle::Null);
+        }
         self.value[x as usize] = h;
     }
     pub fn len(&self) -> usize {

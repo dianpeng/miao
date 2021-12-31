@@ -1,0 +1,46 @@
+
+
+let this_is_a_local_variable = [];
+
+// 2 global assignment
+glb_a = this_is_a_local_variable;
+glb_b = glb_a;
+
+func count(x) {
+  let sum = 0;
+  for _ in x {
+    trace "Val: ", _;
+    sum = sum + 1;
+  }
+  return sum;
+}
+
+// access in global scope
+assert count(glb_a) == 0 && count(glb_b) == 0;
+
+// access in function scope
+let x1 = func() {
+  return count(glb_a) + count(glb_b);
+};
+assert x1() == 0;
+
+// mutate in global scope
+glb_a[0] = 1;
+glb_b[1] = 2;
+
+assert this_is_a_local_variable[0] == 1;
+assert this_is_a_local_variable[1] == 2;
+
+assert glb_b[0] == 1;
+assert glb_a[1] == 2;
+
+// mutate in lexical scope
+(func() {
+  glb_a[0] = 0;
+  glb_b[1] = 0;
+})();
+
+trace "xx", count(glb_a);
+assert count(glb_a) == 2;
+assert glb_a[0] == 0;
+assert glb_a[0] == 0;

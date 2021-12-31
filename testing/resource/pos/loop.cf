@@ -1,0 +1,100 @@
+trace "forever loop ==========================";
+
+{
+  let limit = 100;
+  let i = 0;
+  let sum = 0;
+  for {
+    if i > limit {
+      break;
+    }
+    i = i + 1;
+    sum = sum + i;
+  }
+
+  assert sum == 5151; // guass
+}
+
+{
+
+  let limit = 100;
+  let i = 0;
+  let cc;
+  for {
+    let xx = {
+      'a': 'b',
+      'c': i
+    };
+    cc = xx;
+    if i > limit {
+      break;
+    }
+    i = i + 1;
+  }
+  assert cc.c == 101;
+}
+
+// loop control, continue
+{
+  let sum = 0;
+  let limit = 10;
+  let i = 0;
+  for {
+    if i % 2 == 0 {
+      i = i + 1;
+      continue;
+    }
+    if i > limit {
+      break;
+    }
+    i = i + 1;
+
+    sum = sum + i;
+  }
+
+  assert sum == 30;
+}
+
+// nested loop
+{
+  let l1 = 2;
+  let l2 = 4;
+  let l3 = 8;
+
+  let i1 = 0;
+  let i2 = 0;
+  let i3 = 0;
+  let sum = 0;
+  for {
+    if i1 > l1 break;
+    i1 = i1 + 1;
+    i2 = 0;
+
+    for {
+      if i2 > l2 break;
+      i2 = i2 + 1;
+      i3 = 0;
+
+      for {
+        if i3 > l3 break;
+        i3 = i3 + 1;
+
+        sum = sum + 1;
+      }
+    }
+  }
+
+  // 3 * 5 * 9 == 135
+  assert sum == 135;
+}
+
+trace "condition loop";
+
+{
+  let list = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  let sum = 0;
+  for x in list {
+    sum = sum + x;
+  }
+  assert sum == (0+1+2+3+4+5+6+7+8);
+}

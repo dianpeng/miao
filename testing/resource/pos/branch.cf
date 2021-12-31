@@ -79,3 +79,37 @@
   }
 }
 
+// unsatisfy truth, sadly as a side effect we support followin grammar, since
+// the condition in the if/elif chain can optionally have the ().
+{
+  /**
+   * the following if / else if chain is essentialy as following 
+   *
+   *  if x != 10 {
+   *    ...
+   *  } else {
+   *    if x == 5 {
+   *    } else {
+   *      if x == 2 {
+   *      } else {
+   *        if x == 10 {
+   *        }
+   *      }
+   *    }
+   *  }
+   *
+   *  notes, else if == elif instead of else if in our language, though user
+   *  can do this at a side effect.
+   *
+   */
+
+  let x = 10;
+  if x != 10 {
+  } else if x == 5 {
+  } else if x == 2 {
+  } else if x == 10 {
+    x = 0;
+  }
+  
+  assert x == 0;
+}

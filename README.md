@@ -174,7 +174,7 @@ trace "ANOTHER LOOP: ", another_loop(1, 2, 10);
 
 assert another_loop(1, 2, 10);
 
-```
+````
 
 # Notes
 

@@ -5,7 +5,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::rc::Rc;
 
-use crate::confs::lexer::Lpos;
+use crate::miao::lexer::Lpos;
 
 pub type Index = u32;
 pub type CodePos = u32;

@@ -5,9 +5,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::rc::Weak;
 
-use crate::confs::bytecode::*;
-use crate::confs::exec::Conversion;
-use crate::confs::heap::*;
+use crate::miao::bytecode::*;
+use crate::miao::exec::Conversion;
+use crate::miao::heap::*;
 
 // -----------------------------------------------------------------------------
 // Execution of the runtime, ie the VM.

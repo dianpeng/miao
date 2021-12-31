@@ -1,5 +1,5 @@
-use crate::confs::bytecode::*;
-use crate::confs::lexer::*;
+use crate::miao::bytecode::*;
+use crate::miao::lexer::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -1,5 +1,5 @@
-use crate::confs::bytecode::*;
-use crate::confs::object::*;
+use crate::miao::bytecode::*;
+use crate::miao::object::*;
 
 use std::rc::Rc;
 
@@ -1930,8 +1930,8 @@ impl Unary {
 #[cfg(test)]
 mod exec_tests {
     use super::*;
-    use crate::confs::heap::GHeapConfig;
-    use crate::confs::parser::*;
+    use crate::miao::heap::GHeapConfig;
+    use crate::miao::parser::*;
     use std::cell::RefCell;
 
     fn runstr(code: &str) -> Result<Vresult, Verror> {

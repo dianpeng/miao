@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::confs::bytecode::ProtoRc;
-use crate::confs::object::*;
+use crate::miao::bytecode::ProtoRc;
+use crate::miao::object::*;
 
 // The design of the runtime GC is very simple, we just use a STW method to do
 // the GC. the GHeap take care of all the object creation and register object's

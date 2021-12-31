@@ -151,7 +151,7 @@ assert xxx(101) == 1;
 let count_iter_len = func(obj) {
   let sum = 0;
   for _ in obj {
-    sum = sum + 1;
+    sum +=  1;
   }
   return sum;
 };
@@ -164,8 +164,8 @@ let another_loop = func(start, step, limit) {
   let sum = 0;
   for {
     if start > limit break;
-    start = start + 1;
-    sum = step + step;
+    start += 1;
+    sum += step;
   }
   return sum;
 };

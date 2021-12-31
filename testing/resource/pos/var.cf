@@ -1,4 +1,3 @@
-
 // variable defined in nested lexical block will not interrupt the other one
 {
   let y = 100;

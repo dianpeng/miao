@@ -1399,6 +1399,15 @@ impl Util {
         };
     }
 
+    fn must_strref(v: &Handle) -> StrRef {
+        match v {
+            Handle::Str(vv) => return StrRef::clone(vv),
+            _ => {
+                unreachable!();
+            }
+        };
+    }
+
     fn must_listref(v: &Handle) -> ListRef {
         match v {
             Handle::List(vv) => return ListRef::clone(vv),
@@ -1449,7 +1458,7 @@ impl Util {
 
 macro_rules! bin_function {
     ($name:ident, $op:tt) => {
-        fn $name(
+        pub fn $name(
             l: Handle,
             r: Handle,
             _: &mut Runptr,
@@ -1492,7 +1501,7 @@ macro_rules! bin_function {
 
 macro_rules! bin_comparison {
     ($name:ident, $op:tt, $sop:tt) => {
-        fn $name(
+        pub fn $name(
             l: Handle,
             r: Handle,
             _: &mut Runptr,
@@ -1543,7 +1552,11 @@ macro_rules! bin_comparison {
 }
 
 impl Arithmetic {
-    fn add(l: Handle, r: Handle, run: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn add(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+    ) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1577,6 +1590,15 @@ impl Arithmetic {
             if handle_is_number(&l) && handle_is_number(&r) {
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv + rv));
+            } else if handle_is_str(&l) && handle_is_str(&r) {
+                let lv = Util::must_strref(&l);
+                let rv = Util::must_strref(&r);
+                let mut o = String::new();
+                o.push_str(&lv.borrow().string);
+                o.push_str(&rv.borrow().string);
+                return Result::Ok(
+                    run.borrow().g.borrow_mut().heap.new_string_handle(o),
+                );
             } else {
                 return Result::Err(Verror::from_str(format!(
                     "operator + cannot work with type {} and {}",
@@ -1590,7 +1612,7 @@ impl Arithmetic {
     bin_function!(sub, -);
     bin_function!(mul, *);
 
-    fn div(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn div(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1628,7 +1650,11 @@ impl Arithmetic {
         }
     }
 
-    fn mod_(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn mod_(
+        l: Handle,
+        r: Handle,
+        _: &mut Runptr,
+    ) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1657,7 +1683,7 @@ impl Arithmetic {
         }
     }
 
-    fn pow(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn pow(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1684,7 +1710,7 @@ impl Arithmetic {
 }
 
 impl Comparison {
-    fn eq(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn eq(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match &l {
                 Handle::Int(lv) => {
@@ -1761,7 +1787,7 @@ impl Comparison {
         )));
     }
 
-    fn ne(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn ne(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -2246,13 +2272,7 @@ mod exec_tests {
                 // load the data into the memory
                 let path_string = path.display().to_string();
                 let data = read_to_string(path).unwrap();
-                match runstr_config(
-                    &data,
-                    GHeapConfig {
-                        gc_trigger_size: 1,
-                        string_pool_gc_size: 1,
-                    },
-                ) {
+                match runstr_config(&data, GHeapConfig::dbg(1, 1)) {
                     Result::Err(v) => {
                         dump_code(&data);
                         error += 1;

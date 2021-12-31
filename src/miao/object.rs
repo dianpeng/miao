@@ -732,9 +732,9 @@ impl List {
 
 #[derive(PartialEq, Eq)]
 pub struct Str {
-    pub string: String, // the actual string value
-    pub char_size : usize, // character size
-    gc: GC,             // gc field
+    pub string: String,   // the actual string value
+    pub char_size: usize, // character size
+    gc: GC,               // gc field
 }
 
 // It is just a string pool that keeps a reference into the GCList to dedup
@@ -749,7 +749,7 @@ impl Str {
         let cs = s.chars().count();
         Rc::new(RefCell::new(Str {
             string: s,
-            char_size : cs,
+            char_size: cs,
             gc: GC::nil(),
         }))
     }
@@ -762,13 +762,19 @@ impl StrPool {
             index: HashMap::<String, WkStrRef>::new(),
         }
     }
-    pub fn run_gc(&mut self, limit: u32) -> (u32, u32) {
+
+    // return (reclaimed size, where to start next time)
+    pub fn run_gc(&mut self, from: u32, limit: u32) -> (u32, u32) {
         let sz = self.index.len() as u32;
         let runs = cmp::min(limit, sz);
         let mut idx = 0;
         let mut name_set = HashSet::<String>::new();
+        let mut start = from;
+        if start >= sz {
+            start = 0;
+        }
 
-        for (key, value) in self.index.iter() {
+        for (key, value) in self.index.iter().skip(start as usize) {
             if value.strong_count() == 0 {
                 name_set.insert(key.to_string());
             }
@@ -778,12 +784,30 @@ impl StrPool {
             }
         }
 
+        // make sure we scan at least runs object.
+        if idx < runs {
+            for (key, value) in self.index.iter() {
+                if value.strong_count() == 0 {
+                    name_set.insert(key.to_string());
+                }
+                idx += 1;
+                if idx >= runs {
+                    break;
+                }
+            }
+        }
+
         // remove index's entry based on the name_set recording
         for key in name_set.iter() {
             self.index.remove(key);
         }
 
-        return (sz, name_set.len() as u32);
+        let mut next_start = start + idx;
+        if next_start >= self.index.len() as u32 {
+            next_start = 0;
+        }
+
+        return (name_set.len() as u32, next_start);
     }
 
     // this function tries to get a pooled string based on the input, if the

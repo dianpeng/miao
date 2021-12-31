@@ -1365,30 +1365,45 @@ impl Parser {
         return true;
     }
 
+    fn parse_for_iterator_new(&mut self, id: String) -> Option<u32> {
+        // we should never fail here, since the local is defined in the
+        // current scope and the current scope is just newly allocated.
+        let id_index = self.define_local(id).unwrap();
+
+        if !self.expect_next(Token::In) {
+            return Option::None;
+        }
+        self.next();
+
+        if !self.parse_expression() {
+            return Option::None;
+        }
+
+        // replace current expression into a iterator to support the
+        // for in protocols
+        self.bc().emit_d(Bytecode::IteratorNew, self.dbg());
+        return Option::Some(id_index);
+    }
+
     fn parse_for_statement(&mut self) -> bool {
         self.enter_loop_scope();
 
         // parsing optional for condition
         let lv_index = match self.next() {
-            Token::Id(id) => {
-                // we should never fail here, since the local is defined in the
-                // current scope and the current scope is just newly allocated.
-                let id_index = self.define_local(id).unwrap();
-
-                if !self.expect_next(Token::In) {
+            Token::Let => match self.next() {
+                Token::Id(id) => match self.parse_for_iterator_new(id) {
+                    Option::Some(v) => v,
+                    Option::None => return false,
+                },
+                _ => {
+                    self.grammar_error("unexpected token in loop/for.");
                     return false;
                 }
-                self.next();
-
-                if !self.parse_expression() {
-                    return false;
-                }
-
-                // replace current expression into a iterator to support the
-                // for in protocols
-                self.bc().emit_d(Bytecode::IteratorNew, self.dbg());
-                id_index
-            }
+            },
+            Token::Id(id) => match self.parse_for_iterator_new(id) {
+                Option::Some(v) => v,
+                Option::None => return false,
+            },
             Token::LBra => {
                 return self.parse_forever_loop();
             }
@@ -1402,36 +1417,36 @@ impl Parser {
         // normal iteration loop will be compiled as following
         //
         //       ---------------------
-        //       | iterator_start    |
-        //       |   loop_jump L:m   |
+        //       |   iterator_start  |
+        //       |    loop_jump L:m  |
         //       ---------------------
-        //              |
-        //              |
-        //              |
-        //             \-/
-        //       L: body                    <---- start of the loop body
-        //       |-------------------|
-        //       |                   |
-        //       |     loop body     |
-        //       |                   |
-        //       |-------------------|
-        //             |
-        //             |
-        //             |
-        //            \-/
+        //                |
+        //                |
+        //                |
+        //                |
+        //               \-/
+        //       L: body              <---- start of the loop body
+        //       |------------------|
+        //       |                  |
+        //       |     loop body    |
+        //       |                  |
+        //       |------------------|
+        //                |
+        //                |
+        //                |
+        //               \-/
+        //       |------------------|
+        //       |  iterator_next   |
+        //       |    loop_jump L:m |
+        //       |    jump L:body   |
+        //       |  iterator_next   |
+        //       |    refresh iv    |
+        //       |                  |
+        //       | L:m              |
+        //       |  new basic block |
+        //       |------------------|
         //
-        //       |-------------------|
-        //       |   iterator_next   |
-        //       |     loop_jump L:m |
-        //       |     jump L:body   |
-        //       |   iterator_next   |
-        //       |     refresh iv    |
-        //       |                   |
-        //       | L:m               |
-        //       |  new basic block  |
-        //       |-------------------|
-        //
-        //     iv = induction variable
+        //      iv = induction variable
         //
         // perform a loop rotation, since we issue a sort of like annotated
         // bytecode to mark the starting point of the loop for future JIT

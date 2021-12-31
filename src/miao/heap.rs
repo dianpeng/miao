@@ -38,23 +38,65 @@ use crate::miao::object::*;
 
 #[derive(Clone)]
 pub struct GHeapConfig {
-    pub gc_trigger_size: u32,
+    pub gc_trigger_minimum_size: usize,
+    pub gc_trigger_init_size: usize,
+    pub gc_debug: Option<usize>,
     pub string_pool_gc_size: u32,
 }
 
 impl GHeapConfig {
     pub fn default() -> GHeapConfig {
         GHeapConfig {
-            gc_trigger_size: 1000,
-            string_pool_gc_size: 1000,
+            gc_trigger_minimum_size: 1000,
+            gc_trigger_init_size: 5000,
+            gc_debug: Option::None,
+            string_pool_gc_size: 2000,
         }
     }
+    pub fn dbg(s: usize, sp: u32) -> GHeapConfig {
+        GHeapConfig {
+            gc_trigger_minimum_size: 1000,
+            gc_trigger_init_size: 5000,
+            gc_debug: Option::Some(s),
+            string_pool_gc_size: sp,
+        }
+    }
+}
+
+// GC trigger design.
+//
+// Each gc generation is triggered by heuristic information, we set an initial
+// value and update them dyanmically based on each trigger's results. The main
+// idea is as following :
+//
+// 1) when the memory growth out of a certain threshold,
+//
+//    we should try to do a GC, but the GC may not work, ie result in large chunk
+//    of memory still been alive
+//
+// 2) Then we based on the result update the next trigger
+//
+// The gc just only have one triggers, ie the gc_threshold. The gc_threshold is
+// been measured as object number for now, which is not ideal, but okay for us.
+struct GCTrigger {
+    // next gc threshold, when gc_current_size is larger than this we should do
+    // gc operation, and it will be updated dynamically
+    gc_threshold: usize,
+
+    // when the size is lower than this number, gurantee to not trigger a gc
+    gc_minimum_size: usize,
+
+    // last gc's reclaim size
+    gc_last_reclaim: usize,
+
+    // debug usage
+    gc_debug: Option<usize>,
 }
 
 pub struct GHeap {
     str_pool: StrPool,
     current: GCList,
-    config: GHeapConfig,
+    gc_trigger: GCTrigger,
 
     // global variables visiable for all running scripts,
     pub global: ObjRef,
@@ -66,6 +108,10 @@ pub struct GHeap {
     // a flag here to indicate whether we should trigger gc when interpreter
     // feel fine to do so.
     gc_pending: bool,
+
+    // string pool iteration
+    string_pool_next: u32,
+    string_pool_size: u32,
 }
 
 impl GHeap {
@@ -73,13 +119,19 @@ impl GHeap {
         let mut g = GHeap {
             str_pool: StrPool::new(),
             current: GCList::new(),
-            config: c,
-
+            gc_trigger: GCTrigger {
+                gc_threshold: c.gc_trigger_init_size,
+                gc_minimum_size: c.gc_trigger_minimum_size,
+                gc_last_reclaim: 0,
+                gc_debug: c.gc_debug,
+            },
             // this is just a workaround for Rc, we just need a place holder and
             // later on we will just replace this object
             global: Obj::new(),
             run_list: Vec::<WkRunptr>::new(),
             gc_pending: false,
+            string_pool_next: 0,
+            string_pool_size: c.string_pool_gc_size,
         };
         g.global = g.new_obj();
         g
@@ -107,7 +159,12 @@ impl GHeap {
 
     #[inline(always)]
     pub fn should_gc(&mut self) -> bool {
-        return self.current.len() as u32 >= self.config.gc_trigger_size;
+        match self.gc_trigger.gc_debug {
+            Option::Some(v) => {
+                return self.current.len() > v;
+            }
+            _ => return self.current.len() > self.gc_trigger.gc_threshold,
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -151,6 +208,8 @@ impl GHeap {
     }
 
     pub fn force_gc(&mut self) -> u32 {
+        let current_size = self.current.len();
+
         // (0) performing marking, ie from the root position
         self.scan_root();
 
@@ -181,10 +240,65 @@ impl GHeap {
             };
         }
 
-        // lastly run the string pool GC
-        self.str_pool.run_gc(self.config.string_pool_gc_size as u32);
+        // run string pool GC if needed
+        {
+            let (_, next) = self
+                .str_pool
+                .run_gc(self.string_pool_next, self.string_pool_size);
 
-        return death;
+            self.string_pool_next = next;
+        }
+
+        // the reclaim size ratio, we treat that the collection cannot collect
+        // at least 10% of garbage as none effective, ie it means we should
+        // increase the threshold. We use a simple weighted formula as following
+        //      dr         ratio
+        // 1) [0  -10%]      -1
+        // 2) [10%-20%]     -0.5
+        // 3) [20%-40%]     0.5
+        // 4) [40%-80%]     0.8
+        // 5) [80%]         1.2
+        //
+        // the formula is as following :
+        //   new_thershold =
+        //      clamp(
+        //          current_threshold * clamp(1-death_ratio*ratio),
+        //          min_threshold
+        //      );
+
+        let death_ratio = death as f64 / current_size as f64;
+        let ratio: f64;
+        if death_ratio < 0.1 {
+            ratio = -1.0;
+        } else if death_ratio < 0.2 {
+            ratio = -0.5;
+        } else if death_ratio < 0.4 {
+            ratio = 0.5;
+        } else if death_ratio < 0.8 {
+            ratio = 1.0;
+        } else {
+            ratio = 1.2;
+        }
+
+        let clamp = |v, min| {
+            if v < min {
+                min
+            } else {
+                v
+            }
+        };
+
+        let current_threshold = self.gc_trigger.gc_threshold;
+
+        let new_threshold = clamp(
+            current_threshold as f64 * (1.0 - ratio * death_ratio),
+            self.gc_trigger.gc_minimum_size as f64,
+        ) as usize;
+
+        self.gc_trigger.gc_last_reclaim = death;
+        self.gc_trigger.gc_threshold = new_threshold;
+
+        return death as u32;
     }
 
     // helper functions for gc marking

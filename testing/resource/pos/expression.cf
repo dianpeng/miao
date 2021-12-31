@@ -24,6 +24,13 @@ func test_expr_basic() {
 }
 test_expr_basic();
 
+// string addition
+{
+  let x0 = "a";
+  let x1 = "b";
+  assert x0 + x1 == "ab";
+}
+
 /*
  * the precedence is as following, from high to low
  *   primary expression

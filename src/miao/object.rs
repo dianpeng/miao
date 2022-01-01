@@ -60,10 +60,7 @@ fn unreachable_trace_sinker(_: &mut Runptr, _: u32) -> Option<Verror> {
     unreachable!();
 }
 
-pub fn default_trace_sinker(
-    run: &mut Runptr,
-    arg_count: u32,
-) -> Option<Verror> {
+pub fn default_trace_sinker(run: &mut Runptr, arg_count: u32) -> Option<Verror> {
     let mut idx = arg_count;
     print!("{}", "[trace]: ");
     while idx > 0 {
@@ -80,18 +77,115 @@ pub struct Run {
     pub g: Gptr,
 
     // following variables are considered as GC roots
-    pub global: ObjRef,            // globals
-    pub stack: HandleList,         // run's stack
-    pub rcall: Option<FuncRef>,    // current invocation handler's handle
+    pub global: ObjRef,         // globals
+    pub stack: HandleList,      // run's stack
+    pub rcall: Option<FuncRef>, // current script function's function ref,
+    pub rframe: Option<u32>,    // current frame index in stack if entered
+    // notes. this is a shortcut and will only
+    // be used during interpreted script
     pub trace_sinker: TraceSinker, // trace sinker
-    gc: GC,                        // gc marker
+
+    gc: GC, // gc marker
 }
 
-// Used to save calling context when invoking another function defined in script
-pub struct Rctx {
-    pub rcall: FuncRef,
+// A special framemarker in the user's value stack. The framemarker is used to
+// represent whatever frame is on the value stack and allows JIT code to be
+// swaped in and out.
+#[derive(Clone)]
+pub enum FrameType {
+    // interpreted frame
+    SFunc(FuncRef),
+
+    // native function frame, ie user defined extension function
+    NFunc(NFuncRef),
+}
+
+#[derive(Clone)]
+pub struct Frame {
+    pub rcall: FrameType,
+    // this frame's saved PC, notes this value is snapshotted only when the
+    // frame transfer itself, ie from SFunc -> NFunc or SFunc -> JFunc.
     pub pc: usize,
+
+    // offset of the frame in terms of stack offset
     pub offset: u32,
+
+    // caller's frame, ie if we want to do stack unwinding, if we find out the
+    // current frame then we can walk the whole frame chain reversly via this
+    // value. When caller is 0 means there're no more frames above, notes 0
+    // itself is still a frame and the first scripted frame
+    pub caller: Option<u32>,
+}
+
+impl Frame {
+    pub fn gc_mark(&mut self) {
+        match &self.rcall {
+            FrameType::SFunc(s) => s.borrow_mut().gc_mark(),
+            FrameType::NFunc(s) => s.borrow_mut().gc_mark(),
+        };
+    }
+    pub fn to_string(&self) -> String {
+        match &self.rcall {
+            FrameType::SFunc(fref) => {
+                let pc = self.pc;
+                let stk = self.offset;
+                let bytecode =
+                    fref.borrow().proto.code.array[pc as usize].clone();
+                let lpos = fref.borrow().proto.code.debug[pc as usize].clone();
+                let info = fref.borrow().debug_info();
+                let caller = match self.caller {
+                    Option::Some(v) => v.to_string(),
+                    _ => "N/A".to_string(),
+                };
+                return format!(
+                    "[script, \
+                      caller={}, \
+                      pc={}, \
+                      instr={}, \
+                      stk={}, \
+                      position=({}@{})]: {}",
+                    caller, pc, bytecode, stk, lpos.column, lpos.line, info
+                );
+            }
+            FrameType::NFunc(fref) => {
+                let info = fref.borrow().debug_info();
+                let caller = match self.caller {
+                    Option::Some(v) => v.to_string(),
+                    _ => "N/A".to_string(),
+                };
+                return format!("[native, caller={}]: {}", caller, info);
+            }
+        };
+    }
+}
+
+fn frame_type_is_sfunc(x: &FrameType) -> bool {
+    return match x {
+        FrameType::SFunc(_) => true,
+        FrameType::NFunc(_) => false,
+    };
+}
+
+fn frame_type_is_nfunc(x: &FrameType) -> bool {
+    return match x {
+        FrameType::SFunc(_) => false,
+        FrameType::NFunc(_) => true,
+    };
+}
+
+fn frame_type_to_sfunc(x: &FrameType) -> FuncRef {
+    return match x {
+        FrameType::SFunc(x) => FuncRef::clone(x),
+        FrameType::NFunc(_) => unreachable!(),
+    };
+}
+
+#[allow(dead_code)]
+fn frame_type_to_nfunc(x: &FrameType) -> NFuncRef {
+    return match x {
+        FrameType::SFunc(_) => unreachable!(),
+        FrameType::NFunc(y) => NFuncRef::clone(y),
+    };
 }
 
 pub type Runptr = Rc<RefCell<Run>>;
@@ -136,6 +230,7 @@ impl Run {
             global: g,
             stack: stk,
             rcall: Option::None,
+            rframe: Option::None,
             trace_sinker: default_trace_sinker,
             gc: GC::nil(),
         }))
@@ -148,6 +243,7 @@ impl Run {
             global: x,
             stack: HandleList::new(),
             rcall: Option::None,
+            rframe: Option::None,
             trace_sinker: unreachable_trace_sinker,
             gc: GC::nil(),
         }));
@@ -165,6 +261,7 @@ impl Run {
             global: glb,
             stack: stk,
             rcall: Option::None,
+            rframe: Option::None,
             trace_sinker: ts,
             gc: GC::nil(),
         }))
@@ -211,6 +308,177 @@ impl Run {
             idx += 1;
         }
         return o.join("\n");
+    }
+
+    pub fn get_caller_idx(&self) -> Option<u32> {
+        if self.rframe.is_none() {
+            return Option::None;
+        } else {
+            return match &self.stack[self.rframe.unwrap() as usize] {
+                Handle::CallFrame(x) => x.caller.clone(),
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    pub fn get_caller_frame(&self) -> Option<Frame> {
+        let x = self.get_caller_idx()?;
+        return Option::Some(match &self.stack[x as usize] {
+            Handle::CallFrame(f) => f.clone(),
+            _ => unreachable!(),
+        });
+    }
+
+    pub fn current_frame(&self) -> Frame {
+        return handle_to_call_frame(&self.stack[self.rframe.unwrap() as usize]);
+    }
+
+    pub fn maybe_current_frame(&self) -> Option<Frame> {
+        if self.rframe.is_none() {
+            return Option::None;
+        } else {
+            return Option::Some(self.current_frame());
+        }
+    }
+
+    pub fn update_current_frame(&mut self, pc: usize, offset: u32) {
+        let idx = self.rframe.unwrap() as usize;
+        match &mut self.stack[idx] {
+            Handle::CallFrame(x) => {
+                x.pc = pc;
+                x.offset = offset;
+            }
+            _ => unreachable!(),
+        };
+    }
+
+    // stack walking code, ie generate stack dump or backtrace for diagnostic
+    // purpose etc ...
+    pub fn stacktrace(&self, extra: String) -> String {
+        let mut o = Vec::<String>::new();
+        o.push(extra);
+        let mut idx: usize = 0;
+        let mut current = self.rframe.clone();
+        let mut cur;
+
+        loop {
+            match current {
+                Option::Some(v) => cur = v as usize,
+                _ => break,
+            };
+
+            match &self.stack[cur] {
+                Handle::CallFrame(f) => {
+                    o.push(format!("frame-{} {}", idx, f.to_string()));
+                    current = f.caller.clone();
+                }
+                _ => unreachable!(),
+            };
+            idx += 1;
+        }
+
+        return o.join("\n");
+    }
+
+    // stack handling, used internally and should not used by user directly
+    // we manage calling frame directly on the evaluation value stack.
+    pub fn enter_script_frame(&mut self, c: FuncRef) {
+        let caller = self.rframe.clone();
+        self.stack.push(Handle::CallFrame(Frame {
+            rcall: FrameType::SFunc(FuncRef::clone(&c)),
+            pc: 0,
+            offset: 0,
+            caller: caller,
+        }));
+        self.rcall = Option::Some(c);
+        self.rframe = Option::Some((self.stack.len() - 1) as u32);
+    }
+
+    pub fn enter_native_frame(&mut self, c: NFuncRef) {
+        let caller = self.rframe.clone();
+        self.stack.push(Handle::CallFrame(Frame {
+            rcall: FrameType::NFunc(NFuncRef::clone(&c)),
+            pc: 0,
+            offset: 0,
+            caller: caller,
+        }));
+        self.rcall = Option::None;
+        self.rframe = Option::Some((self.stack.len() - 1) as u32);
+    }
+
+    // all leave script frame will return a tuple as following
+    pub fn leave_script_frame(
+        &mut self,
+        return_arg: u32,
+    ) -> Option<(usize, FuncRef, u32)> {
+        let prev_frame = self.unwind_with(return_arg + 2);
+        assert!(frame_type_is_sfunc(&prev_frame.rcall));
+        self.rframe = prev_frame.caller;
+        self.rcall = self.maybe_get_rframe_sfunc_ref();
+
+        if self.stack.len() == 0 {
+            return Option::None;
+        } else {
+            let cur_frame = self.current_frame();
+            return Option::Some((
+                cur_frame.pc,
+                frame_type_to_sfunc(&cur_frame.rcall),
+                cur_frame.offset,
+            ));
+        }
+    }
+
+    pub fn leave_native_frame(&mut self) -> Option<(usize, FuncRef, u32)> {
+        let prev_frame = self.unwind_with(2);
+        assert!(frame_type_is_nfunc(&prev_frame.rcall));
+        self.rframe = prev_frame.caller;
+        self.rcall = self.maybe_get_rframe_sfunc_ref();
+
+        if self.stack.len() == 0 {
+            return Option::None;
+        } else {
+            let cur_frame = self.current_frame();
+            return Option::Some((
+                cur_frame.pc,
+                frame_type_to_sfunc(&cur_frame.rcall),
+                cur_frame.offset,
+            ));
+        }
+    }
+
+    // private functions for manipulating the calling frame
+    fn maybe_get_rframe_sfunc_ref(&self) -> Option<FuncRef> {
+        match &self.rframe {
+            Option::Some(idx) => {
+                match &self.stack[*idx as usize] {
+                    Handle::CallFrame(frame) => {
+                        if frame_type_is_sfunc(&frame.rcall) {
+                            return Option::Some(frame_type_to_sfunc(
+                                &frame.rcall,
+                            ));
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            _ => (),
+        };
+
+        return Option::None;
+    }
+
+    fn unwind_with(&mut self, shrink_size: u32) -> Frame {
+        assert!(shrink_size <= self.stack.len() as u32);
+        let new_size = self.stack.len() - shrink_size as usize;
+        let r = self.stack[self.rframe.unwrap() as usize].clone();
+        self.stack.truncate(new_size);
+        return handle_to_call_frame(&r);
+    }
+
+    pub fn unwind_stack(&mut self) {
+        self.stack.clear();
+        self.rcall = Option::None;
+        self.rframe = Option::None;
     }
 }
 
@@ -360,6 +628,23 @@ pub enum Handle {
     Function(FuncRef),
     NFunction(NFuncRef),
     Iter(IterRef),
+
+    // Internal objects
+    CallFrame(Frame),
+}
+
+pub fn handle_is_call_frame(x: &Handle) -> bool {
+    return match x {
+        Handle::CallFrame(_) => true,
+        _ => false,
+    };
+}
+
+pub fn handle_to_call_frame(x: &Handle) -> Frame {
+    return match x {
+        Handle::CallFrame(y) => y.clone(),
+        _ => unreachable!(),
+    };
 }
 
 pub fn handle_is_type_same(l: &Handle, r: &Handle) -> bool {
@@ -378,6 +663,7 @@ pub fn handle_type_name(v: &Handle) -> &str {
         Handle::Function(_) => "function",
         Handle::NFunction(_) => "native_function",
         Handle::Iter(_) => "iterator",
+        Handle::CallFrame(_) => "call_frame",
     };
 }
 
@@ -393,6 +679,7 @@ pub fn handle_sizeof(v: &Handle) -> usize {
         Handle::Function(v) => v.borrow().sizeof(),
         Handle::NFunction(v) => v.borrow().sizeof(),
         Handle::Iter(v) => v.borrow().sizeof(),
+        Handle::CallFrame(_) => 0,
     };
 }
 

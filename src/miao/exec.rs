@@ -779,10 +779,9 @@ impl Exec {
     }
 
     fn ret_native(&mut self, arg_count: u32, run: &mut Runptr) {
-        debug_assert!(handle_is_function(
+        debug_assert!(handle_is_native_function(
             &self.top((arg_count + 1) as usize, run)
         ));
-        self.pop_n((arg_count + 1) as usize, run);
     }
 
     fn ret(&mut self, pop_n: u32, run: &mut Runptr) -> Handle {
@@ -811,9 +810,6 @@ impl Exec {
 
         debug_assert!(handle_is_function(&self.top((pop_n + 1) as usize, run)));
 
-        // first +1 => return value
-        // second +1 => the target
-        self.pop_n((pop_n + 1 + 1) as usize, run);
         return ret_val;
     }
 
@@ -977,47 +973,15 @@ impl Exec {
     fn generate_return(
         &mut self,
         run: &mut Runptr,
-        calling_stack: &Vec<Rctx>,
         rt: ResultType,
     ) -> Result<Vresult, Verror> {
         match &self.error_msg {
             Option::Some(v) => {
-                // Generate comprehensive diagnostic information ---------------
-
-                let mut o = Vec::<String>::new();
-                o.push(format!("execution error: {}", v.description));
-
-                let mut idx: usize = 0;
-
-                for frame in calling_stack.iter().rev() {
-                    // move back for the pc, otherwise the pc points to the
-                    // next position. Notes, this is highly problematic since
-                    // if we don't have a fixed width instruction, the substraction
-                    // will not work
-                    let pc = frame.pc - 1;
-
-                    let bytecode = frame.rcall.borrow().proto.code.array
-                        [pc as usize]
-                        .clone();
-
-                    let lpos = frame.rcall.borrow().proto.code.debug
-                        [pc as usize]
-                        .clone();
-
-                    let stk = frame.offset;
-
-                    let info = frame.rcall.borrow().debug_info();
-
-                    o.push(format!(
-                        "frame-{} [pc={}, instr={}, stk={}, position=({}@{})]: {}",
-                        idx, pc, bytecode, stk, lpos.column, lpos.line, info
-                    ));
-
-                    idx += 1;
-                }
-
                 return Result::Err(Verror {
-                    description: o.join("\n"),
+                    description: run.borrow().stacktrace(format!(
+                        "execution error: {}",
+                        v.description
+                    )),
                 });
             }
             _ => {
@@ -1051,7 +1015,6 @@ impl Exec {
 
         // (1) setup the calling frame for now, notes the |current| frame is
         //     been implicitly defined on the stack of interp
-        let mut calling_stack = Vec::<Rctx>::new();
         let mut pc: usize = 0;
         let mut current = main_func;
 
@@ -1072,11 +1035,10 @@ impl Exec {
         // the stack, so the offset should be 1 instead 0
         let mut offset: u32 = 1; // used to offset move operation
 
-        run.borrow_mut().rcall = Option::Some(Rc::clone(&current));
-        run.borrow_mut().stack.clear();
-
-        // setup the top most function's calling frame
+        // place the current calling function onto the run's stack, this will
+        // generate a Frame marker on the stack for later usage.
         self.push_val(run, Handle::Function(Rc::clone(&current)));
+        run.borrow_mut().enter_script_frame(Rc::clone(&current));
 
         // (1) starts to run the function's code
         while !stop {
@@ -1084,7 +1046,8 @@ impl Exec {
             let cptr = Rc::clone(&current);
             let bc_len = cptr.borrow().proto.code.array.len();
 
-            // execution loops
+            // internal interpretation loop, represent a execution frame and
+            // been controlled by new_frame flag.
             while pc < bc_len {
                 debug_assert!(!stop);
                 // will have to do the copy, otherwise the GCMark will try to
@@ -1200,12 +1163,9 @@ impl Exec {
 
                     // Calling handling
                     Bytecode::Call(i) => {
-                        // save the current call on top of the calling stack
-                        calling_stack.push(Rctx {
-                            pc: pc,
-                            rcall: Rc::clone(&current),
-                            offset: offset,
-                        });
+                        // update the current frame's information, notes, this
+                        // is updated on demand whenever a call is issued.
+                        run.borrow_mut().update_current_frame(pc, offset);
 
                         // needs to calculate offset
                         let off = run.borrow().stack.len() as u32 - i;
@@ -1219,18 +1179,28 @@ impl Exec {
                                 match result {
                                     CallFunc::Script(new_call) => {
                                         current = new_call;
+
+                                        run.borrow_mut().enter_script_frame(
+                                            FuncRef::clone(&current),
+                                        );
+
                                         pc = 0;
                                         offset = off;
-                                        run.borrow_mut().rcall =
-                                            Option::Some(Rc::clone(&current));
                                         new_frame = true;
                                         true
                                     }
 
-                                    // calling native function, the calling interpreter
-                                    // will have to be blocked until the user issued
-                                    // native function to be finished.
                                     CallFunc::Native(nfunc) => {
+                                        run.borrow_mut()
+                                            .update_current_frame(pc, offset);
+
+                                        // the native frame should be enterred
+                                        // right at this stage without going to
+                                        // outer of the interpretation loop.
+                                        run.borrow_mut().enter_native_frame(
+                                            NFuncRef::clone(&nfunc),
+                                        );
+
                                         match nfunc.borrow_mut().invoke(i, run) {
                                             Result::Err(e) => {
                                                 self.interp_err(e);
@@ -1238,25 +1208,23 @@ impl Exec {
                                             }
                                             Result::Ok(v) => {
                                                 self.ret_native(i, run);
+                                                match run
+                                                    .borrow_mut()
+                                                    .leave_native_frame()
+                                                {
+                                                    Option::Some(f) => {
+                                                        pc = f.0;
+                                                        current = f.1;
+                                                        offset = f.2;
+                                                    }
+                                                    _ => stop = true,
+                                                };
 
-                                                // the native function return us something
-                                                // and we should perform an inline return
-                                                // here, ie the stack should be cleaned
-                                                // up
-                                                if calling_stack.len() == 0 {
-                                                    stop = true;
-                                                } else {
-                                                    let v = calling_stack
-                                                        .pop()
-                                                        .unwrap();
-                                                    pc = v.pc;
-                                                    current = v.rcall;
-                                                    offset = v.offset;
-                                                    run.borrow_mut().rcall =
-                                                        Option::Some(Rc::clone(
-                                                            &current,
-                                                        ));
-                                                }
+                                                // native call, no need to enter
+                                                // another frame since we never
+                                                // really swap out of the interp
+                                                // frame but call into extension
+                                                // directly
                                                 self.push_val(run, v.value);
                                                 true
                                             }
@@ -1269,17 +1237,14 @@ impl Exec {
 
                     Bytecode::Return(x) => {
                         let return_value = self.ret(x, run);
-
-                        if calling_stack.len() == 0 {
-                            stop = true;
-                        } else {
-                            let v = calling_stack.pop().unwrap();
-                            pc = v.pc;
-                            current = v.rcall;
-                            offset = v.offset;
-                            run.borrow_mut().rcall =
-                                Option::Some(Rc::clone(&current));
-                        }
+                        match run.borrow_mut().leave_script_frame(x) {
+                            Option::Some(caller) => {
+                                pc = caller.0;
+                                current = caller.1;
+                                offset = caller.2;
+                            }
+                            _ => stop = true,
+                        };
                         self.push_val(run, return_value);
                         new_frame = true;
                         true
@@ -1338,8 +1303,10 @@ impl Exec {
                     break;
                 }
 
-                // okay function frame changed, just break out of the inner loop
-                // and testify against the outer loop.
+                // testify whether we should enter into a new frame, the script
+                // call is literally been flatten out in terms frame enter and
+                // leave, the information is been kept on the value stack directly
+                // for future JIT frame extension
                 if new_frame {
                     new_frame = false;
                     break;
@@ -1347,16 +1314,8 @@ impl Exec {
             }
         }
 
-        // notes, the current frame is not been put into the calling stack, we
-        // just need to prepend it
-        calling_stack.push(Rctx {
-            rcall: Rc::clone(&current),
-            pc: pc,
-            offset: offset,
-        });
-        let r = self.generate_return(run, &calling_stack, stop_reason);
-        run.borrow_mut().rcall = Option::None;
-        run.borrow_mut().stack.clear();
+        let r = self.generate_return(run, stop_reason);
+        run.borrow_mut().unwind_stack();
 
         return r;
     }
@@ -1778,6 +1737,9 @@ impl Comparison {
                         &Util::must_iterref(&r),
                     )));
                 }
+                Handle::CallFrame(_) => {
+                    return Result::Ok(Handle::Boolean(false));
+                }
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
@@ -1855,6 +1817,9 @@ impl Comparison {
                         &Util::must_iterref(&r),
                     )));
                 }
+                Handle::CallFrame(_) => {
+                    return Result::Ok(Handle::Boolean(false));
+                }
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
@@ -1914,6 +1879,9 @@ impl Conversion {
             Handle::Iter(v) => {
                 return v.borrow().debug_info();
             }
+            Handle::CallFrame(v) => {
+                return v.to_string();
+            }
         };
     }
 
@@ -1964,6 +1932,7 @@ impl Conversion {
             Handle::Function(_) => return false,
             Handle::NFunction(_) => return false,
             Handle::Iter(itr) => return itr.borrow().has(r),
+            Handle::CallFrame(_) => return false,
         };
     }
 
@@ -2781,6 +2750,7 @@ return x;
 
     #[test]
     fn test_assignment_compl() {
+        dump_code("let a =[1, 2]; a[1] = 100; return a[1];");
         assert_eq!(runstr_int("let a = [1, 2]; a[1] = 100; return a[1];"), 100);
         assert_eq!(
             runstr_int("let a = {}; a.b = 1; a['c'] = 2; return a.b + a.c;"),

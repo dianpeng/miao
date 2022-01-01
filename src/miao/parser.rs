@@ -196,7 +196,8 @@ impl LexicalScope {
             // and also the argument as well. the max_local only covers local
             // variable instead of the arguments, for return it needs to account
             // for the argument count as well here.
-            let return_size = self.max_local + self.arg_count.unwrap();
+            // lastly, include the newly added frame marker
+            let return_size = self.max_local + self.arg_count.unwrap() + 1;
             r.emit(&mut p.code, Bytecode::Return(return_size));
         }
 
@@ -254,6 +255,9 @@ impl LexicalScope {
     }
     fn define_arg(&mut self, name: String) -> Option<u32> {
         self.define_local_internal(name, false)
+    }
+    fn define_call_frame(&mut self) {
+        self.define_local_internal("@call-frame".to_string(), false);
     }
     fn local_len(&self) -> u32 {
         return self.local.len() as u32;
@@ -523,10 +527,13 @@ impl Parser {
     fn enter_func_scope(&mut self, hint: String, arg_list: Vec<String>) {
         let mut scope = LexicalScope::new(ScopeType::FuncStart, 0, 0);
         scope.hint = Option::Some(hint);
+
+        // make sure include the frame marker, otherwise it does not work
         scope.arg_count = Option::Some(arg_list.len() as u32);
         for x in arg_list.iter() {
             scope.define_arg(x.to_string());
         }
+        scope.define_call_frame();
         self.scope_list.push(RefCell::new(scope));
         self.set_cur_bc();
     }

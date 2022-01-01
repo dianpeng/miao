@@ -1,12 +1,14 @@
 use crate::miao::bytecode::*;
+use crate::miao::exec::{Arithmetic, Comparison, Unary};
 use crate::miao::lexer::*;
+use crate::miao::object::{handle_is_null, Gptr, Handle, Run, Runptr};
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // THE parser. We implement a recursive descent parser with directly yielding of
 // bytecode instruction, some trick is been performed to allow one pass parasing
 // possible.
-
 #[derive(Clone)]
 pub struct Perror {
     pub description: String,
@@ -26,6 +28,59 @@ enum Symbol {
     Local(u32),
     Upvalue(u32),
     Global(u32),
+}
+
+// Constant folding optimization for expression. We implement a on the fly
+// constant folding optimization during code generation from the parser. To
+// achieve this, we allow all the following function to emit extra info for
+// constant folding chances. The basic idea is that we only do optimization
+// for code as simple as :
+//
+//    1) primitive types load of both lhs and rhs
+//
+//       int,
+//       real,
+//       boolean,
+//       string
+//
+//    2) only for operator of binary/unary, excluding from logic and ternary
+#[derive(Clone)]
+enum MaybeConst {
+    Int(i64),
+    Real(f64),
+    Boolean(bool),
+    Str(String),
+    Invalid,
+}
+
+fn maybe_const_is_invalid(x: &MaybeConst) -> bool {
+    match x {
+        MaybeConst::Invalid => return true,
+        _ => return false,
+    };
+}
+
+// If maybe const is invalid, Handle will be null
+fn maybe_const_to_handle(r: &mut Runptr, x: MaybeConst) -> Handle {
+    return match x {
+        MaybeConst::Int(i) => Handle::Int(i),
+        MaybeConst::Real(i) => Handle::Real(i),
+        MaybeConst::Boolean(i) => Handle::Boolean(i),
+        MaybeConst::Str(i) => {
+            r.borrow().g.borrow_mut().heap.new_string_handle(i)
+        }
+        _ => Handle::Null,
+    };
+}
+
+fn handle_to_maybe_const(h: Handle) -> MaybeConst {
+    return match h {
+        Handle::Int(i) => MaybeConst::Int(i),
+        Handle::Real(i) => MaybeConst::Real(i),
+        Handle::Boolean(i) => MaybeConst::Boolean(i),
+        Handle::Str(x) => MaybeConst::Str(x.borrow().string.clone()),
+        _ => MaybeConst::Invalid,
+    };
 }
 
 struct UpvalueEntry {
@@ -219,10 +274,18 @@ struct Parser {
 
     // some fields mostly used to workaround with rust's strict type system
     cur_bc: Option<BytecodeArrayPtr>,
+
+    // used for constant folding part, since evaluation requires us to create
+    // a runptr to invoke exec's builtin function, otherwise we will have to
+    // duplicate the code which is not ideal for us.
+    g: Gptr,
+
+    // created on demand when binary_fold is invoked
+    runptr: Option<Runptr>,
 }
 
 impl Parser {
-    pub fn new(source: &str) -> Parser {
+    pub fn new(g: Gptr, source: &str) -> Parser {
         Parser {
             l: Lexer::new(source),
             token: Token::Invalid,
@@ -230,6 +293,8 @@ impl Parser {
             err: Option::None,
             scope_list: ScopeList::new(),
             cur_bc: Option::None,
+            g: g,
+            runptr: Option::None,
         }
     }
 
@@ -301,13 +366,14 @@ impl Parser {
 
             // now let's just collapse the value into this function's upvalue
             // scopes
-            prev_index = self.scope_list[wts].borrow_mut().define_upvalue(
-                UpvalueEntry {
-                    name: n.to_string(),
-                    index: prev_index,
-                    is_stack: is_stack,
-                },
-            );
+            prev_index =
+                self.scope_list[wts]
+                    .borrow_mut()
+                    .define_upvalue(UpvalueEntry {
+                        name: n.to_string(),
+                        index: prev_index,
+                        is_stack: is_stack,
+                    });
 
             is_stack = false;
         }
@@ -795,8 +861,7 @@ impl Parser {
                 self.emit_return(l);
             }
 
-            let bytecode =
-                self.current_func_start().bc.as_ref().unwrap().take();
+            let bytecode = self.current_func_start().bc.as_ref().unwrap().take();
 
             let mut current_p = Prototype::new(bytecode);
 
@@ -1005,19 +1070,21 @@ impl Parser {
         return true;
     }
 
-    fn parse_suffix_expression(&mut self) -> bool {
+    fn parse_suffix_expression(&mut self) -> (bool, u32) {
+        let mut count = 0;
         loop {
             match &self.token {
                 Token::LSqr => {
                     self.next();
                     if !self.parse_expression() {
-                        return false;
+                        return (false, 0);
                     }
                     if !self.expect_current(Token::RSqr) {
-                        return false;
+                        return (false, 0);
                     }
                     self.next();
                     self.bc().emit_d(Bytecode::ArrayIndex, self.dbg());
+                    count += 1;
                 }
                 Token::Dot => {
                     match self.next() {
@@ -1026,8 +1093,12 @@ impl Parser {
                             self.bc()
                                 .emit_d(Bytecode::DotAccess(idx), self.dbg());
                             self.next();
+                            count += 1;
                         }
-                        _ => break,
+                        _ => {
+                            self.grammar_error("expect id after dot");
+                            return (false, 0);
+                        }
                     };
                 }
                 Token::LPar => {
@@ -1043,7 +1114,7 @@ impl Parser {
                         }
                         _ => loop {
                             if !self.parse_expression() {
-                                return false;
+                                return (false, 0);
                             }
                             arg_size += 1;
 
@@ -1060,19 +1131,20 @@ impl Parser {
                                         "expect ',' or ')' in function call \
                                         argument list ",
                                     );
-                                    return false;
+                                    return (false, 0);
                                 }
                             };
                         },
                     };
 
                     self.bc().emit_d(Bytecode::Call(arg_size), self.dbg());
+                    count += 1;
                 }
                 _ => break,
             }
         }
 
-        return true;
+        return (true, count);
     }
 
     // notes, this function assume the Id(string) been consumed already, and it
@@ -1081,7 +1153,7 @@ impl Parser {
         if !self.load_symbol(n) {
             return false;
         }
-        return self.parse_suffix_expression();
+        return self.parse_suffix_expression().0;
     }
 
     // this is the most ambiguious statement to be parsed and we are having a
@@ -1808,10 +1880,95 @@ impl Parser {
         };
     }
 
-    fn parse_binary(&mut self, next: fn(&mut Parser) -> bool, t: u32) -> bool {
-        if !next(self) {
-            return false;
+    fn fold_runptr(&mut self) -> Runptr {
+        if self.runptr.is_none() {
+            let dup_g = Gptr::clone(&self.g);
+            self.runptr = Option::Some(Run::new_fold(dup_g));
         }
+        return Runptr::clone(self.runptr.as_ref().unwrap());
+    }
+
+    fn binary_fold(
+        &mut self,
+        bc: Bytecode,
+        lhs: MaybeConst,
+        rhs: MaybeConst,
+    ) -> MaybeConst {
+        let mut run = self.fold_runptr();
+
+        let l = maybe_const_to_handle(&mut run, lhs);
+        let r = maybe_const_to_handle(&mut run, rhs);
+
+        if handle_is_null(&l) || handle_is_null(&r) {
+            return MaybeConst::Invalid;
+        }
+
+        let r = match bc {
+            Bytecode::Add => Arithmetic::add(l, r, &mut run),
+            Bytecode::Sub => Arithmetic::sub(l, r, &mut run),
+            Bytecode::Mul => Arithmetic::mul(l, r, &mut run),
+            Bytecode::Div => Arithmetic::div(l, r, &mut run),
+            Bytecode::Pow => Arithmetic::pow(l, r, &mut run),
+            Bytecode::Mod => Arithmetic::mod_(l, r, &mut run),
+
+            Bytecode::Lt => Comparison::lt(l, r, &mut run),
+            Bytecode::Le => Comparison::le(l, r, &mut run),
+            Bytecode::Gt => Comparison::gt(l, r, &mut run),
+            Bytecode::Ge => Comparison::ge(l, r, &mut run),
+            Bytecode::Eq => Comparison::eq(l, r, &mut run),
+            Bytecode::Ne => Comparison::ne(l, r, &mut run),
+            _ => unreachable!(),
+        };
+
+        match r {
+            Result::Err(_) => {
+                // Currently, we just delay the bug until we run the code, maybe
+                // we should report it early ?
+                return MaybeConst::Invalid;
+            }
+            Result::Ok(v) => {
+                return handle_to_maybe_const(v);
+            }
+        };
+    }
+
+    fn emit_maybe_const(&mut self, x: MaybeConst) {
+        match x {
+            MaybeConst::Int(v) => {
+                self.emit_int(v);
+            }
+            MaybeConst::Real(v) => {
+                self.emit_real(v);
+            }
+            MaybeConst::Boolean(v) => {
+                self.bc().emit_d(
+                    if v {
+                        Bytecode::LoadTrue
+                    } else {
+                        Bytecode::LoadFalse
+                    },
+                    self.dbg(),
+                );
+            }
+            MaybeConst::Str(v) => {
+                self.emit_str(v);
+            }
+            _ => {
+                unreachable!();
+            }
+        };
+    }
+
+    fn parse_binary(
+        &mut self,
+        next: fn(&mut Parser) -> (bool, MaybeConst),
+        t: u32,
+    ) -> (bool, MaybeConst) {
+        let (result, mut lhs_const) = next(self);
+        if !result {
+            return (false, MaybeConst::Invalid);
+        }
+
         loop {
             let bytecode = match self.match_binary_token(t) {
                 Some(v) => v,
@@ -1819,83 +1976,153 @@ impl Parser {
             };
             self.next();
 
-            if !next(self) {
-                return false;
+            let (r, mc) = next(self);
+            if !r {
+                return (false, MaybeConst::Invalid);
             }
-            self.bc().emit_d(bytecode, self.dbg());
+
+            // try perform constant folding here
+            lhs_const = self.binary_fold(bytecode.clone(), lhs_const, mc);
+
+            // if maybe constant represent a constant value, it means the folding
+            // works, and it means the current bytecode has 2 redundancy inside
+            // of the code buffer. Notes it must 2 bytecode instruction for sure,
+            // since any expression atomic requires more than 1 bytecode will not
+            // be treated as constant value.
+            let x = lhs_const.clone();
+            if maybe_const_is_invalid(&x) {
+                self.bc().emit_d(bytecode, self.dbg());
+            } else {
+                self.bc().pop2();
+                self.emit_maybe_const(x);
+            }
         }
-        return !self.has_error();
+        return (!self.has_error(), lhs_const);
     }
 
     // Euqality/Comparison/Factor/Power/Term
     fn parse_equality(&mut self) -> bool {
-        return self.parse_binary(Parser::parse_comparison, Parser::EQUALITY);
+        return self
+            .parse_binary(Parser::parse_comparison, Parser::EQUALITY)
+            .0;
     }
-    fn parse_comparison(&mut self) -> bool {
+    fn parse_comparison(&mut self) -> (bool, MaybeConst) {
         return self.parse_binary(Parser::parse_term, Parser::COMPARISON);
     }
-    fn parse_term(&mut self) -> bool {
+    fn parse_term(&mut self) -> (bool, MaybeConst) {
         return self.parse_binary(Parser::parse_factor, Parser::TERM);
     }
-    fn parse_factor(&mut self) -> bool {
+    fn parse_factor(&mut self) -> (bool, MaybeConst) {
         return self.parse_binary(Parser::parse_power, Parser::FACTOR);
     }
-    fn parse_power(&mut self) -> bool {
+    fn parse_power(&mut self) -> (bool, MaybeConst) {
         return self.parse_binary(Parser::parse_unary, Parser::POWER);
     }
 
     // unary
-    fn parse_unary(&mut self) -> bool {
-        let mut bc = Option::<Bytecode>::None;
+    // allowing user to write code as following :
+    //   -----10
+    // so essentially the prefix unary operator should be a list
+    fn parse_unary(&mut self) -> (bool, MaybeConst) {
+        let mut bc_list = Vec::<Bytecode>::new();
 
-        match &self.token {
-            Token::Sub => {
-                bc = Option::Some(Bytecode::Neg);
-                self.next();
-            }
-            Token::Not => {
-                bc = Option::Some(Bytecode::Not);
-                self.next();
-            }
-            Token::Typeof => {
-                bc = Option::Some(Bytecode::Typeof);
-                self.next();
-            }
-            Token::Sizeof => {
-                bc = Option::Some(Bytecode::Sizeof);
-                self.next();
-            }
-            _ => (),
-        };
-
-        if !self.parse_primary() {
-            return false;
+        loop {
+            match &self.token {
+                Token::Sub => {
+                    bc_list.push(Bytecode::Neg);
+                    self.next();
+                }
+                Token::Not => {
+                    bc_list.push(Bytecode::Not);
+                    self.next();
+                }
+                Token::Typeof => {
+                    bc_list.push(Bytecode::Typeof);
+                    self.next();
+                }
+                Token::Sizeof => {
+                    bc_list.push(Bytecode::Sizeof);
+                    self.next();
+                }
+                _ => break,
+            };
         }
 
-        match bc {
-            Some(v) => {
-                self.bc().emit_d(v, self.dbg());
-            }
-            _ => (),
+        let (result, mut maybe_const) = self.parse_primary();
+        if !result {
+            return (false, MaybeConst::Invalid);
         }
-        return true;
+
+        let mut run = self.fold_runptr();
+        let mut fold_count = 0;
+
+        // folding loop of unary operation, notes, the folding is transactional,
+        // ie either we can fold to the end or we don't do any folding. This is
+        // simple for us since we allow user to write long prefix list.
+        for bc in bc_list.iter().rev() {
+            let handle = maybe_const_to_handle(&mut run, maybe_const.clone());
+            if handle_is_null(&handle) {
+                break;
+            }
+
+            let fold_result = match bc.clone() {
+                Bytecode::Neg => Unary::neg(handle, &mut run),
+                Bytecode::Not => Unary::not(handle, &mut run),
+                Bytecode::Typeof => Unary::typeof_(handle, &mut run),
+                Bytecode::Sizeof => Unary::sizeof(handle, &mut run),
+                _ => break,
+            };
+
+            match fold_result {
+                Result::Err(_) => break,
+                Result::Ok(v) => {
+                    maybe_const = handle_to_maybe_const(v);
+                    match maybe_const {
+                        MaybeConst::Invalid => break,
+                        _ => (),
+                    };
+                    fold_count += 1;
+                }
+            };
+        }
+
+        if fold_count == bc_list.len() && !maybe_const_is_invalid(&maybe_const) {
+            let dup = maybe_const.clone();
+            self.bc().pop();
+            self.emit_maybe_const(maybe_const);
+            return (true, dup);
+        } else {
+            // generate all the prefix operator one by one
+            for x in bc_list.iter_mut() {
+                self.bc().emit_d(x.clone(), self.dbg());
+            }
+            return (true, MaybeConst::Invalid);
+        }
     }
 
-    fn parse_primary(&mut self) -> bool {
+    fn parse_primary(&mut self) -> (bool, MaybeConst) {
         match &self.token {
             Token::Id(n) => {
                 let x = n.to_string();
                 self.next();
-                return self.parse_id_prefix_start_id(x);
+                return (self.parse_id_prefix_start_id(x), MaybeConst::Invalid);
             }
             _ => {
-                if !self.parse_atomic() {
-                    return false;
+                let r_atomic = self.parse_atomic();
+                if !r_atomic.0 {
+                    return (false, MaybeConst::Invalid);
                 }
-                if !self.parse_suffix_expression() {
-                    return false;
+
+                let (suffix_r, suffix_count) = self.parse_suffix_expression();
+                if !suffix_r {
+                    return (false, MaybeConst::Invalid);
                 }
-                return true;
+
+                if suffix_count == 0 {
+                    return r_atomic;
+                } else {
+                    return (true, MaybeConst::Invalid);
+                }
             }
         };
     }
@@ -1952,55 +2179,66 @@ impl Parser {
         return true;
     }
 
-    fn parse_atomic(&mut self) -> bool {
+    fn parse_atomic(&mut self) -> (bool, MaybeConst) {
         match self.token.clone() {
             Token::Int(v) => {
                 self.emit_int(v);
                 self.next();
+                return (true, MaybeConst::Int(v));
             }
             Token::Real(v) => {
                 self.emit_real(v);
                 self.next();
+                return (true, MaybeConst::Real(v));
             }
             Token::True => {
                 self.bc().emit_d(Bytecode::LoadTrue, self.dbg());
                 self.next();
+                return (true, MaybeConst::Boolean(true));
             }
             Token::False => {
                 self.bc().emit_d(Bytecode::LoadFalse, self.dbg());
                 self.next();
+                return (true, MaybeConst::Boolean(false));
             }
             Token::Null => {
                 self.bc().emit_d(Bytecode::LoadNull, self.dbg());
                 self.next();
             }
             Token::Str(v) => {
+                let clone = v.clone();
                 self.emit_str(v);
                 self.next();
+                return (true, MaybeConst::Str(clone));
             }
             Token::StrTempStart => {
-                return self.parse_string_template();
+                return (self.parse_string_template(), MaybeConst::Invalid);
             }
-            Token::LSqr => return self.parse_list(),
-            Token::LBra => return self.parse_object(),
-            Token::Func => return self.parse_closure(),
+            Token::LSqr => return (self.parse_list(), MaybeConst::Invalid),
+            Token::LBra => return (self.parse_object(), MaybeConst::Invalid),
+            Token::Func => return (self.parse_closure(), MaybeConst::Invalid),
             Token::LPar => {
                 self.next();
                 if !self.parse_expression() {
-                    return false;
+                    return (false, MaybeConst::Invalid);
                 }
                 if !self.expect_current(Token::RPar) {
-                    return false;
+                    return (false, MaybeConst::Invalid);
                 }
                 self.next();
             }
             _ => {
-                return self
-                    .grammar_error(&format!("unknown token {:?}", self.token));
+                return (
+                    self.grammar_error(&format!(
+                        "unknown token {:?}",
+                        self.token
+                    )),
+                    MaybeConst::Invalid,
+                );
             }
         };
 
-        return true;
+        return (true, MaybeConst::Invalid);
     }
 
     fn parse_list(&mut self) -> bool {
@@ -2064,8 +2302,8 @@ impl Parser {
     }
 }
 
-pub fn do_parse(s: &str, comment: &str) -> Result<Prototype, Perror> {
-    let mut p = Parser::new(s);
+pub fn do_parse(g: Gptr, s: &str, comment: &str) -> Result<Prototype, Perror> {
+    let mut p = Parser::new(g, s);
     return p.parse(comment.to_string());
 }
 

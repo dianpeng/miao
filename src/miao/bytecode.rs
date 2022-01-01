@@ -260,6 +260,13 @@ impl BytecodeArray {
         self.debug.pop();
         self.array.pop().unwrap()
     }
+    pub fn pop(&mut self) {
+        self.pop_last();
+    }
+    pub fn pop2(&mut self) {
+        self.pop();
+        self.pop();
+    }
 
     // Function used to do patching, ie temporary reserve a slot at the current
     // position and then later on do patching accordingly. This is mainly used

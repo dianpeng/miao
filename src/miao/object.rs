@@ -56,6 +56,10 @@ pub type Gptr = Rc<RefCell<G>>;
 // error provided
 pub type TraceSinker = fn(r: &mut Runptr, arg_count: u32) -> Option<Verror>;
 
+fn unreachable_trace_sinker(_: &mut Runptr, _: u32) -> Option<Verror> {
+    unreachable!();
+}
+
 pub fn default_trace_sinker(
     run: &mut Runptr,
     arg_count: u32,
@@ -136,6 +140,20 @@ impl Run {
             gc: GC::nil(),
         }))
     }
+    // only used when doing constant folding during the parsing
+    pub fn new_fold(g: Gptr) -> Runptr {
+        let x = g.borrow_mut().heap.new_obj();
+        return Runptr::new(RefCell::new(Run {
+            g: g,
+            global: x,
+            stack: HandleList::new(),
+            rcall: Option::None,
+            trace_sinker: unreachable_trace_sinker,
+            gc: GC::nil(),
+        }));
+    }
+
+    // used for interpretation usage
     pub fn new(
         g: Gptr,
         glb: ObjRef,

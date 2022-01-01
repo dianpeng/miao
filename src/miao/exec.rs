@@ -284,11 +284,10 @@ impl Exec {
         let func = {
             let run_borrow = run.borrow_mut();
             let mut g_borrow = run_borrow.g.borrow_mut();
-            let x = g_borrow.heap.new_function_handle(
-                v,
-                &mut dup_run,
-                upvalue_list,
-            );
+            let x =
+                g_borrow
+                    .heap
+                    .new_function_handle(v, &mut dup_run, upvalue_list);
             x
         };
 
@@ -1232,8 +1231,7 @@ impl Exec {
                                     // will have to be blocked until the user issued
                                     // native function to be finished.
                                     CallFunc::Native(nfunc) => {
-                                        match nfunc.borrow_mut().invoke(i, run)
-                                        {
+                                        match nfunc.borrow_mut().invoke(i, run) {
                                             Result::Err(e) => {
                                                 self.interp_err(e);
                                                 false
@@ -1255,9 +1253,9 @@ impl Exec {
                                                     current = v.rcall;
                                                     offset = v.offset;
                                                     run.borrow_mut().rcall =
-                                                        Option::Some(
-                                                            Rc::clone(&current),
-                                                        );
+                                                        Option::Some(Rc::clone(
+                                                            &current,
+                                                        ));
                                                 }
                                                 self.push_val(run, v.value);
                                                 true
@@ -1660,11 +1658,7 @@ impl Arithmetic {
         }
     }
 
-    pub fn mod_(
-        l: Handle,
-        r: Handle,
-        _: &mut Runptr,
-    ) -> Result<Handle, Verror> {
+    pub fn mod_(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -2027,7 +2021,7 @@ mod exec_tests {
             let dup_g = Rc::clone(&g);
             g.borrow_mut().heap.new_run(dup_g)
         };
-        let main = match do_parse(code, "[tests]") {
+        let main = match do_parse(g, code, "[tests]") {
             Result::Ok(v) => Rc::new(v),
             Result::Err(e) => {
                 return Result::Err(Verror {
@@ -2047,7 +2041,7 @@ mod exec_tests {
             let dup_g = Rc::clone(&g);
             g.borrow_mut().heap.new_run(dup_g)
         };
-        let main = match do_parse(code, "[tests]") {
+        let main = match do_parse(g, code, "[tests]") {
             Result::Ok(v) => Rc::new(v),
             Result::Err(e) => {
                 return Result::Err(Verror {
@@ -2062,7 +2056,7 @@ mod exec_tests {
     }
 
     fn dump_code(code: &str) {
-        match do_parse(code, "[test]") {
+        match do_parse(G::new(GHeapConfig::default()), code, "[test]") {
             Result::Ok(v) => {
                 println!("DUMP CODE, BUG");
                 println!("======================================");
@@ -2238,6 +2232,82 @@ mod exec_tests {
         };
 
         unreachable!();
+    }
+
+    #[test]
+    fn test_folding() {
+        {
+            dump_code("let a = 1 + 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 + 2; return a;"), 3);
+        }
+        {
+            dump_code("let a = 1 - 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 - 2; return a;"), -1);
+        }
+        {
+            dump_code("let a = 1 * 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 * 2; return a;"), 2);
+        }
+        {
+            dump_code("let a = 1 / 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 / 2; return a;"), 0);
+        }
+        {
+            dump_code("let a = 1 ^ 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 ^ 2; return a;"), 1);
+        }
+        {
+            dump_code("let a = 1 % 2; return a; ");
+            assert_eq!(runstr_int("let a = 1 % 2; return a;"), 1 % 2);
+        }
+        {
+            dump_code("let a = 1+2*3/2+4; return a; ");
+            assert_eq!(
+                runstr_int("let a = 1+2*3/2+4; return a;"),
+                1 + 2 * 3 / 2 + 4
+            );
+        }
+        {
+            dump_code("let a = 'xx' + 'aa'; return a;");
+            assert_eq!(
+                runstr_int("let a = 'xx' + 'aa'; return a == 'xxaa' ? 1 : 0;"),
+                1,
+            );
+        }
+        {
+            dump_code("let a = 1 > 100; return a;");
+            assert_eq!(runstr_bool("let a = 1 > 100; return a;"), false);
+        }
+        {
+            dump_code("let a = 100 > 100; return a;");
+            assert_eq!(runstr_bool("let a = 100 >= 100; return a;"), true);
+        }
+        {
+            dump_code("let a = 1 < 100; return a;");
+            assert_eq!(runstr_bool("let a = 1 < 100; return a;"), true);
+        }
+        {
+            dump_code("let a = 100 <= 100; return a;");
+            assert_eq!(runstr_bool("let a = 100 <= 100; return a;"), true);
+        }
+        {
+            dump_code("let a = 1 != 1; return a;");
+            assert_eq!(runstr_bool("let a = 1 != 1; return a;"), false);
+        }
+        {
+            dump_code("let a = 1 == 1; return a;");
+            assert_eq!(runstr_bool("let a = 1 == 1; return a;"), true);
+        }
+
+        // unary folding
+        {
+            dump_code("let a = ---100; return a;");
+            assert_eq!(runstr_int("let a = ---100; return a;"), -100);
+        }
+        {
+            dump_code("let a = !!!true; return a;");
+            assert_eq!(runstr_bool("let a = !!!true; return a;"), false);
+        }
     }
 
     use std::fs::*;
@@ -2571,7 +2641,7 @@ return foo()()()()();
 return foo();
         "#;
 
-        let main = match do_parse(code, "[tests]") {
+        let main = match do_parse(Gptr::clone(&g), code, "[tests]") {
             Result::Ok(v) => Rc::new(v),
             Result::Err(e) => {
                 println!("parser error: {}", e.description);
@@ -2722,9 +2792,7 @@ return x;
             100
         );
         assert_eq!(
-            runstr_int(
-                "let a = {'a':{'b':{}}}; a.a.b.c = 100; return a.a.b.c;"
-            ),
+            runstr_int("let a = {'a':{'b':{}}}; a.a.b.c = 100; return a.a.b.c;"),
             100
         );
     }

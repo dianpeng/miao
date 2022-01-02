@@ -127,7 +127,7 @@ impl Frame {
     pub fn to_string(&self) -> String {
         match &self.rcall {
             FrameType::SFunc(fref) => {
-                let pc = self.pc;
+                let pc = if self.pc != 0 { self.pc - 1 } else { self.pc };
                 let stk = self.offset;
                 let bytecode =
                     fref.borrow().proto.code.array[pc as usize].clone();
@@ -143,7 +143,7 @@ impl Frame {
                       pc={}, \
                       instr={}, \
                       stk={}, \
-                      position=({}@{})]: {}",
+                      position=({}:{})]: {}",
                     caller, pc, bytecode, stk, lpos.column, lpos.line, info
                 );
             }
@@ -342,13 +342,17 @@ impl Run {
     }
 
     pub fn update_current_frame(&mut self, pc: usize, offset: u32) {
-        let idx = self.rframe.unwrap() as usize;
-        match &mut self.stack[idx] {
-            Handle::CallFrame(x) => {
-                x.pc = pc;
-                x.offset = offset;
+        match &self.rframe {
+            Option::Some(idx) => {
+                match &mut self.stack[*idx as usize] {
+                    Handle::CallFrame(x) => {
+                        x.pc = pc;
+                        x.offset = offset;
+                    }
+                    _ => unreachable!(),
+                };
             }
-            _ => unreachable!(),
+            _ => (),
         };
     }
 

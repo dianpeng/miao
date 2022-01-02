@@ -1008,49 +1008,59 @@ impl Parser {
     }
 
     fn parse_local_define_statement(&mut self) -> bool {
-        if !self.expect_next(Token::Id("".to_string())) {
-            return false;
-        }
+        self.next();
 
-        let id = match &self.token {
-            Token::Id(v) => v.to_string(),
-            _ => {
-                self.grammar_error(
-                    "unexpected token, expect identifier to be part of local \
-                        definition statement",
-                );
-                return false;
-            }
-        };
-
-        // allocate a stack position to store our local variables
-        let stack_pos = match self.define_local(id) {
-            Some(v) => v,
-            _ => {
-                self.grammar_error("duplicate local variable define");
-                return false;
-            }
-        };
-
-        match self.next() {
-            Token::Assign => {
-                self.next();
-                if !self.parse_expression() {
+        loop {
+            let id = match &self.token {
+                Token::Id(v) => v.to_string(),
+                _ => {
+                    self.grammar_error(
+                        "unexpected token, expect identifier for local \
+                        variable define",
+                    );
                     return false;
                 }
-                self.bc().emit_d(Bytecode::Store(stack_pos), self.dbg());
-            }
-            _ => {
-                self.bc().emit_d(Bytecode::LoadNull, self.dbg());
-                self.bc().emit_d(Bytecode::Store(stack_pos), self.dbg());
-            }
-        };
+            };
 
-        // lastly check the ';' after each statement
-        if !self.expect_current(Token::Semicolon) {
-            return false;
+            // allocate a stack position to store our local variables
+            let stack_pos = match self.define_local(id) {
+                Some(v) => v,
+                _ => {
+                    self.grammar_error("duplicate local variable define");
+                    return false;
+                }
+            };
+
+            match self.next() {
+                Token::Assign => {
+                    self.next();
+                    if !self.parse_expression() {
+                        return false;
+                    }
+                    self.bc().emit_d(Bytecode::Store(stack_pos), self.dbg());
+                }
+                _ => {
+                    self.bc().emit_d(Bytecode::LoadNull, self.dbg());
+                    self.bc().emit_d(Bytecode::Store(stack_pos), self.dbg());
+                }
+            };
+
+            match &self.token {
+                Token::Semicolon => {
+                    self.next();
+                    break;
+                }
+                Token::Comma => {
+                    self.next();
+                }
+                _ => {
+                    self.grammar_error(
+                        "expect ';' or ',' for local variable definition",
+                    );
+                    return false;
+                }
+            };
         }
-        self.next();
 
         return true;
     }

@@ -1314,6 +1314,7 @@ impl Exec {
             }
         }
 
+        run.borrow_mut().update_current_frame(pc, offset);
         let r = self.generate_return(run, stop_reason);
         run.borrow_mut().unwind_stack();
 

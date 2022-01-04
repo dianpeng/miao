@@ -127,7 +127,7 @@ impl Frame {
     pub fn to_string(&self) -> String {
         match &self.rcall {
             FrameType::SFunc(fref) => {
-                let pc = self.pc;
+                let pc = if self.pc != 0 { self.pc - 1 } else { self.pc };
                 let stk = self.offset;
                 let bytecode =
                     fref.borrow().proto.code.array[pc as usize].clone();
@@ -143,7 +143,7 @@ impl Frame {
                       pc={}, \
                       instr={}, \
                       stk={}, \
-                      position=({}@{})]: {}",
+                      position=({}:{})]: {}",
                     caller, pc, bytecode, stk, lpos.column, lpos.line, info
                 );
             }
@@ -324,7 +324,7 @@ impl Run {
     pub fn get_caller_frame(&self) -> Option<Frame> {
         let x = self.get_caller_idx()?;
         return Option::Some(match &self.stack[x as usize] {
-            Handle::CallFrame(f) => f.clone(),
+            Handle::CallFrame(f) => *f.clone(),
             _ => unreachable!(),
         });
     }
@@ -342,13 +342,17 @@ impl Run {
     }
 
     pub fn update_current_frame(&mut self, pc: usize, offset: u32) {
-        let idx = self.rframe.unwrap() as usize;
-        match &mut self.stack[idx] {
-            Handle::CallFrame(x) => {
-                x.pc = pc;
-                x.offset = offset;
+        match &self.rframe {
+            Option::Some(idx) => {
+                match &mut self.stack[*idx as usize] {
+                    Handle::CallFrame(x) => {
+                        x.pc = pc;
+                        x.offset = offset;
+                    }
+                    _ => unreachable!(),
+                };
             }
-            _ => unreachable!(),
+            _ => (),
         };
     }
 
@@ -384,24 +388,24 @@ impl Run {
     // we manage calling frame directly on the evaluation value stack.
     pub fn enter_script_frame(&mut self, c: FuncRef) {
         let caller = self.rframe.clone();
-        self.stack.push(Handle::CallFrame(Frame {
+        self.stack.push(Handle::CallFrame(Box::new(Frame {
             rcall: FrameType::SFunc(FuncRef::clone(&c)),
             pc: 0,
             offset: 0,
             caller: caller,
-        }));
+        })));
         self.rcall = Option::Some(c);
         self.rframe = Option::Some((self.stack.len() - 1) as u32);
     }
 
     pub fn enter_native_frame(&mut self, c: NFuncRef) {
         let caller = self.rframe.clone();
-        self.stack.push(Handle::CallFrame(Frame {
+        self.stack.push(Handle::CallFrame(Box::new(Frame {
             rcall: FrameType::NFunc(NFuncRef::clone(&c)),
             pc: 0,
             offset: 0,
             caller: caller,
-        }));
+        })));
         self.rcall = Option::None;
         self.rframe = Option::Some((self.stack.len() - 1) as u32);
     }
@@ -630,7 +634,7 @@ pub enum Handle {
     Iter(IterRef),
 
     // Internal objects
-    CallFrame(Frame),
+    CallFrame(Box<Frame>),
 }
 
 pub fn handle_is_call_frame(x: &Handle) -> bool {
@@ -642,7 +646,7 @@ pub fn handle_is_call_frame(x: &Handle) -> bool {
 
 pub fn handle_to_call_frame(x: &Handle) -> Frame {
     return match x {
-        Handle::CallFrame(y) => y.clone(),
+        Handle::CallFrame(y) => *y.clone(),
         _ => unreachable!(),
     };
 }

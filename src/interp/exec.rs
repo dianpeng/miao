@@ -1,7 +1,7 @@
-use crate::miao::bytecode::*;
-use crate::miao::object::*;
-
 use std::rc::Rc;
+
+use crate::object::object::*;
+use crate::bc::bytecode::*;
 
 pub struct Arithmetic;
 pub struct Unary;
@@ -1981,8 +1981,8 @@ impl Unary {
 #[cfg(test)]
 mod exec_tests {
     use super::*;
-    use crate::miao::heap::GHeapConfig;
-    use crate::miao::parser::*;
+    use crate::heap::heap::GHeapConfig;
+    use crate::syntax::parser::*;
     use std::cell::RefCell;
 
     fn runstr(code: &str) -> Result<Vresult, Verror> {

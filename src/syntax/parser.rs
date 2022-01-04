@@ -1,7 +1,7 @@
-use crate::miao::bytecode::*;
-use crate::miao::exec::{Arithmetic, Comparison, Unary};
-use crate::miao::lexer::*;
-use crate::miao::object::{handle_is_null, Gptr, Handle, Run, Runptr};
+use crate::bc::bytecode::*;
+use crate::interp::exec::{Arithmetic, Comparison, Unary};
+use crate::syntax::lexer::*;
+use crate::object::object::{handle_is_null, Gptr, Handle, Run, Runptr};
 
 use std::cell::RefCell;
 use std::rc::Rc;

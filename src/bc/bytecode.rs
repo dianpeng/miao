@@ -5,7 +5,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::rc::Rc;
 
-use crate::miao::lexer::Lpos;
+use crate::syntax::lexer::Lpos;
 
 pub type Index = u32;
 pub type CodePos = u32;
@@ -41,8 +41,8 @@ pub enum Bytecode {
     ConStr(u32),
 
     // Upvalue
-    LoadUpvalue(u32),
-    SetUpvalue(u32),
+    LoadUpvalue(Index),
+    SetUpvalue(Index),
 
     // list
     ListStart,
@@ -74,8 +74,8 @@ pub enum Bytecode {
 
     // Access
     // dot accessor
-    DotAccess(u32),
-    DotStore(u32),
+    DotAccess(Index),
+    DotStore(Index),
 
     // [] accessor
     ArrayIndex,

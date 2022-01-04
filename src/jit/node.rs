@@ -1,62 +1,304 @@
-// Node, ie the basic IR(HIR, MIR, LIR) element. Essentially we need some way
-// to orgnize the IR into a graph so we need node and edge. To simplify the
-// problem we just use node to represent everything and edge is been part of the
-// node as some external reference.
-//
-// In technique term, we gonna produce a sea of nodes style IR, featuring a SSA
-// style graph.
-//
-// In order to work with the strigent rust type system, we gonna use some simple
-// way to represent each relationship.
-// We have following relationship :
-//
-//   1) use-def 
-//      ie, the node may needs value to compute its output, ie like add node
-//      needs 2 operand as input and generate one output, indicated by the node
-//      itself.
-//
-//   2) def-use
-//      In order to reversely look up the user of node, ie who uses this node as 
-//      its value input, we also need a def-use. use def and def use are
-//      essentially 2 counterpart of value use relationship.
-//
-//   3) control flow
-//      Since we are using sea of nodes, there's no explicity CFG until we start
-//      to do scheduling. But it will be nice for us to indicate the CFG node for
-//      some of the value nodes. Additionally, since we are using a single graph
-//      to represent everything, a node needs to hjave CFG relationship in later
-//      phase, ie after scheduling and instruction selection.
-//
-//   4) effect
-//      The effect is another dependency that is implicitly represented by the
-//      code. The most obvious dependency are data dependency, we have 3 data
-//      dependency based on compiler theory, 1) true dependency; 2) anti
-//      dependency; and 3) output dependency. But sometimes some code needs to
-//      have other implicit dependency, for example if we the compiler cannot
-//      decide alias rules, 2 variables may alias so even if their symbol name
-//      differs but the data dependency may implicitly held. And since the 2
-//      expression/statement may not have any use-def/def-use relationship, we
-//      will need to use effect to represent the dependency.
-//
-//
-//  Apart from dependency, each node also needs to hold several other information
-//
-//  1) Op, ie what types of operation the node has. In our framework, op is a
-//     single giant flat enum containing, both high, middle and low operations,
-//     ranging from boxing style polymorphic operator to low operator close to
-//     1 to 1 assembler operations, like add_int32 etc ..
-//
-//  2) Type, each node needs a type indication as well to represent the type
-//     inferrence result. The type itself is also a simple lattice.
-//
-//  3) Id, used to allow user to hold external information
-//
-//  4) Misc information added on demand for other usage, for example rpo order,
-//     dominator tree, RA status etc ... They are all placed into the node for
-//     simplicity.
-//
-// To reference a node, user needs to use a node reference instead of using the
-// node itself. This makes replacing node easier to perform and also not too
-// much rust hustle. A node reference is essentially a number/index pointing
-// into a vector of node.
+use std::cell::Cell;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::rc::Weak;
 
+type Oref = Rc<RefCell<Op>>;
+type Nref = Rc<RefCell<Node>>;
+type WkNref = Weak<RefCell<Node>>;
+type Aref = Rc<RefCell<Alias>>;
+type Bref = Rc<RefCell<Block>>;
+type Fref = Rc<RefCell<Func>>;
+
+type Nid = u32;
+type Bcid = u32; // bytecode id, used to reference back to the bytecode
+
+type BlockList = Vec<Bref>;
+
+struct DefUse {
+    d: Nref,
+    u: Nref,
+}
+
+type DefUseChain = Vec<DefUse>;
+type DefUseTable = Vec<Box<DefUseChain>>;
+
+enum AliasType {
+    Not,
+    May,
+    Must,
+}
+
+enum AComp {
+    Index(Nref),
+    Dot(Nref),
+}
+
+struct Alias {
+    slot: Aref,
+    base: Nref,
+    comp: Acomp,
+}
+
+struct Node {
+    op: Oref,
+    lhs: Nref,
+    rhs: Nref,
+    effect: Nref,
+
+    id: Nid,
+    bcid: Bcid,
+    alias: Aref,
+    tp: TypeHint,
+}
+
+enum OpType {
+    Const,
+    IntArith,
+    FloatArith,
+    IntComp,
+    FloatComp,
+    Jump,
+    Global,
+    Cfg,
+    Misc,
+}
+
+enum OpTier {
+    Rval,
+    NArch,
+    Arch,
+}
+
+enum OpVal {
+    // misc of the OpVal
+    // indicate a numeric index used for loading constantn
+    ConstIndex,
+
+    // indicate the size of the calling argument
+    CallArgSize,
+
+    // Boxing and unboxing operation
+
+    // BoxXXX operation, take a machine representation value and box it into a
+    // Rval, ie the boxed version.
+    BoxI64,
+    BoxI32,
+    BoxI16,
+    BoxI8,
+    BoxU32,
+    BoxU16,
+    BoxU8,
+
+    BoxF64,
+
+    BoxTrue,
+    BoxFalse,
+    BoxNull,
+
+    // UnboxXXX operation, take a box value and unbox value back to the machine
+    // type represented by the instruction itself. Notes, if the boxed value has
+    // a different type, then the behavior is undefined, these operation doesn't
+    // do check. If check is needed, perform with CheckUnboxXXX instruction is
+    // preferred, which will check the type of the value and deoptimize if the
+    // instruction failed
+    UnboxI64,
+    UnboxI32,
+    UnboxI16,
+    UnboxI8,
+    UnboxU32,
+    UnboxU16,
+    UnboxU8,
+    UnboxF64,
+    UnboxTrue,
+    UnboxFalse,
+    UnboxNull,
+
+    // Checked version of unbox instruction, will automatically deoptimize if the
+    // testify fails
+    CheckUnboxI64,
+    CheckUnboxI32,
+    CheckUnboxI16,
+    CheckUnboxI8,
+    CheckUnboxU32,
+    CheckUnboxU16,
+    CheckUnboxU8,
+    CheckUnboxF64,
+    CheckUnboxTrue,
+    CheckUnboxFalse,
+    CheckUnboxNull,
+
+    // Type guards, these operations will check whether the boxed value has type
+    // otherwise it will just deoptimize, ie jumping to the deoptimize branch
+
+    // high level, dealing with boxing value and all the script semantic, all
+    // the instruction prefixed with Rv, stands for Rust value, which means the
+    // boxed value.
+
+    // Rust value arithmetic value, both sides must be a boxed value,
+    RvAdd,
+    RvSub,
+    RvMul,
+    RvDiv,
+    RvMod,
+    RvPow,
+
+    // Rust value comparison, both side must be boxed value and it generates a
+    // boxed boolean value.
+    RvEq,
+    RvNe,
+    RvGt,
+    RvGe,
+    RvLt,
+    RvLe,
+
+    // Rust value unary, generates a boxed value.
+    RvNot,
+    RvNeg,
+    RvBoolean,
+
+    // Logic helper, the original And/Or/Ternary does too much things, we will
+    // lower them into an expression/artihmetic operator + control flow opeartor
+    RvAnd,
+    RvOr,
+
+    // Literal constant loading, notes, the value been loaded is a boxed value
+    RvLoadInt,
+    RvLoadReal,
+    RvLoadString,
+    RvLoadFunction,
+    RvLoadNull,
+    RvLoadTrue,
+    RvLoadFalse,
+
+    // Concatenate strings
+    RvConStr,
+
+    // List creation operations, this operation creates a new list in boxed
+    // version
+    RvListCreate,
+    RvListAdd,
+
+    RvObjectCreate,
+    RvObjectAdd,
+
+    RvIteratorNew,
+    RvIteratorHas,
+    RvIteratorNext,
+    RvIteratorValue,
+
+    // Global
+    RvLoadGlobal,
+    RvSetGlobal,
+
+    // Indexing/Dot, memory operation, generate side effect and should be used
+    // with alias analysis
+    RvMemIndexLoad,
+    RvMemIndexStore,
+    RvMemDotLoad,
+    RvMemDotStore,
+
+    // Builtins
+    RvAssert1,
+    RvAssert2,
+    RvTrace,
+    RvTypeof,
+    RvSizeof,
+    RvHalt,
+
+    // none arch, after aggressive type inference or speculative instruction
+    // mostly bound to a fixed width machine word operation. All the instruction
+    // prefixed with Fw, which stands for fixed width.
+
+    // low level, ie nearly 1to2 assembly translation. All the instruction prefix
+    // with M, which stands for machine.
+
+    // Control Flow
+    CfJjmp,
+    CfJtrue,
+    CfJfalse,
+}
+
+struct Op {
+    name: String,
+    tp: OpType,
+    tier: OpTier,
+    op: OpVal,
+    side_effect: bool,
+
+    // mostly used when the Op is lower instruction
+    in_size: u8,
+    out_size: u8,
+    flag_size: u8,
+}
+
+// Control-flow block, used when we start to do scheduling of instructions.
+struct Block {
+    // list of isntruction been scheduled into the basic block, notes the inst
+    // here has the partial order already
+    ins_list: Vec<Nref>,
+
+    // tree
+    pred: BlockList,
+    lhs: Bref,
+    rhs: Bref,
+
+    // dominator
+    // immediate dominator inside of the dominator trees that dominates this
+    // block
+    idom: Bref,
+
+    // dominator set, ie all the block been dominated by this block
+    domset: BlockList,
+
+    // we don't use dominator frontier to generate SSA, so it is not needed for
+    // now.
+    // other propertis
+    jmp: BlockJmp,
+    tp: BlockType,
+}
+
+trait Reclaim {
+    // User implementation of is_dead, since we need to somehow to break the
+    // cyclical reference conuting. The only way to do so is let each part to
+    // decide whether it is dead or not.
+    fn is_dead(&self) -> bool;
+
+    // Invoked by Mpool when the corresponding node is been marked as dead
+    fn on_reclaim(&mut self);
+}
+
+// all the allocation will be done inside of the Mpool which keeps a strong
+// ref to each node and also call reclaim if needed, this makes us away from
+// leaking memory internally due to cyclical reference counting.
+struct Mpool {
+}
+
+// represent the function that been parsed
+struct Func {
+    g: Grptr,
+
+    // (start, end) block
+    start: Bref,
+    end: Bref,
+
+    // deoptimization end block
+    deopt: Bref,
+
+    // return end block
+    ret: Bref,
+
+    // halt end block
+    halt: Bref,
+
+    // error end block, ie generated by builtin assert1/2 etc ...
+    error: Bref,
+
+    // bug end block, ie generated by compiler to allow future debugging
+    bug: Bref,
+
+    // rpo order
+    rpo: BlockList,
+}
+
+struct Graph {}

@@ -1,7 +1,8 @@
 use std::rc::Rc;
 
-use crate::object::object::*;
 use crate::bc::bytecode::*;
+use crate::ic::ftype::*;
+use crate::object::object::*;
 
 pub struct Arithmetic;
 pub struct Unary;
@@ -58,139 +59,139 @@ impl Exec {
         true
     }
 
-    fn add(&mut self, run: &mut Runptr) -> bool {
+    fn add(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::add(lhs, rhs, run) {
+        return match Arithmetic::add(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn sub(&mut self, run: &mut Runptr) -> bool {
+    fn sub(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::sub(lhs, rhs, run) {
+        return match Arithmetic::sub(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn mul(&mut self, run: &mut Runptr) -> bool {
+    fn mul(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::mul(lhs, rhs, run) {
+        return match Arithmetic::mul(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn div(&mut self, run: &mut Runptr) -> bool {
+    fn div(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::div(lhs, rhs, run) {
+        return match Arithmetic::div(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
-    fn mod_(&mut self, run: &mut Runptr) -> bool {
+    fn mod_(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::mod_(lhs, rhs, run) {
+        return match Arithmetic::mod_(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn pow(&mut self, run: &mut Runptr) -> bool {
+    fn pow(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Arithmetic::pow(lhs, rhs, run) {
+        return match Arithmetic::pow(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
     // Comparison
-    fn eq(&mut self, run: &mut Runptr) -> bool {
+    fn eq(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::eq(lhs, rhs, run) {
+        return match Comparison::eq(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn ne(&mut self, run: &mut Runptr) -> bool {
+    fn ne(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::ne(lhs, rhs, run) {
+        return match Comparison::ne(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn gt(&mut self, run: &mut Runptr) -> bool {
+    fn gt(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::gt(lhs, rhs, run) {
+        return match Comparison::gt(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn ge(&mut self, run: &mut Runptr) -> bool {
+    fn ge(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::ge(lhs, rhs, run) {
+        return match Comparison::ge(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn lt(&mut self, run: &mut Runptr) -> bool {
+    fn lt(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::lt(lhs, rhs, run) {
+        return match Comparison::lt(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
-    fn le(&mut self, run: &mut Runptr) -> bool {
+    fn le(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let lhs = self.top1(run);
         let rhs = self.top0(run);
-        return match Comparison::le(lhs, rhs, run) {
+        return match Comparison::le(lhs, rhs, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.bin_result(run, v),
         };
     }
 
     // unary
-    fn not(&mut self, run: &mut Runptr) -> bool {
+    fn not(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let v = self.top0(run);
-        return match Unary::not(v, run) {
+        return match Unary::not(v, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.una_result(run, v),
         };
     }
-    fn neg(&mut self, run: &mut Runptr) -> bool {
+    fn neg(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let v = self.top0(run);
-        return match Unary::neg(v, run) {
+        return match Unary::neg(v, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.una_result(run, v),
         };
     }
-    fn typeof_(&mut self, run: &mut Runptr) -> bool {
+    fn typeof_(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let v = self.top0(run);
-        return match Unary::typeof_(v, run) {
+        return match Unary::typeof_(v, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.una_result(run, v),
         };
     }
-    fn sizeof(&mut self, run: &mut Runptr) -> bool {
+    fn sizeof(&mut self, run: &mut Runptr, pc: usize) -> bool {
         let v = self.top0(run);
-        return match Unary::sizeof(v, run) {
+        return match Unary::sizeof(v, run, pc) {
             Result::Err(v) => self.interp_err(v),
             Result::Ok(v) => self.una_result(run, v),
         };
@@ -1060,22 +1061,23 @@ impl Exec {
                 gptr.borrow_mut().heap.run_gc();
 
                 if !match bytecode {
-                    Bytecode::Add => self.add(run),
-                    Bytecode::Sub => self.sub(run),
-                    Bytecode::Mul => self.mul(run),
-                    Bytecode::Div => self.div(run),
-                    Bytecode::Mod => self.mod_(run),
-                    Bytecode::Pow => self.pow(run),
-                    Bytecode::Eq => self.eq(run),
-                    Bytecode::Ne => self.ne(run),
-                    Bytecode::Gt => self.gt(run),
-                    Bytecode::Ge => self.ge(run),
-                    Bytecode::Lt => self.lt(run),
-                    Bytecode::Le => self.le(run),
-                    Bytecode::Not => self.not(run),
-                    Bytecode::Neg => self.neg(run),
-                    Bytecode::Typeof => self.typeof_(run),
-                    Bytecode::Sizeof => self.sizeof(run),
+                    Bytecode::Add => self.add(run, pc),
+                    Bytecode::Sub => self.sub(run, pc),
+                    Bytecode::Mul => self.mul(run, pc),
+                    Bytecode::Div => self.div(run, pc),
+                    Bytecode::Mod => self.mod_(run, pc),
+                    Bytecode::Pow => self.pow(run, pc),
+                    Bytecode::Eq => self.eq(run, pc),
+                    Bytecode::Ne => self.ne(run, pc),
+                    Bytecode::Gt => self.gt(run, pc),
+                    Bytecode::Ge => self.ge(run, pc),
+                    Bytecode::Lt => self.lt(run, pc),
+                    Bytecode::Le => self.le(run, pc),
+                    Bytecode::Not => self.not(run, pc),
+                    Bytecode::Neg => self.neg(run, pc),
+                    Bytecode::Typeof => self.typeof_(run, pc),
+                    Bytecode::Sizeof => self.sizeof(run, pc),
+
                     Bytecode::Boolean => self.boolean(run),
 
                     Bytecode::LoadInt(i) => self.load_int(i, run),
@@ -1367,6 +1369,7 @@ impl Util {
         };
     }
 
+    #[allow(dead_code)]
     fn must_strref(v: &Handle) -> StrRef {
         match v {
             Handle::Str(vv) => return StrRef::clone(vv),
@@ -1424,24 +1427,32 @@ impl Util {
     }
 }
 
-macro_rules! bin_function {
+macro_rules! bin_arithmetic {
     ($name:ident, $op:tt) => {
         pub fn $name(
             l: Handle,
             r: Handle,
-            _: &mut Runptr,
+            run: &mut Runptr,
+            bcpos: usize,
         ) -> Result<Handle, Verror> {
+            let cref = run.borrow_mut().rcall_val();
+            let mut rref = cref.borrow_mut();
+            let fd = rref.fd.index_mut(bcpos);
+
             if handle_is_type_same(&l, &r) {
                 match l {
                     Handle::Int(lv) => {
+                        fd.binary(FType::Int, FType::Int);
                         return Result::Ok(Handle::Int(lv $op Util::must_int(&r)));
                     }
                     Handle::Real(lv) => {
+                        fd.binary(FType::Real, FType::Real);
                         return Result::Ok(Handle::Real(
                             lv $op Util::must_real(&r),
                         ));
                     }
                     _ => {
+                        fd.binary(FType::Unknown, FType::Unknown);
                         return Result::Err(Verror::from_str(format!(
                             "operator {} cannot work with type {} and {}",
                             stringify!($op),
@@ -1452,9 +1463,11 @@ macro_rules! bin_function {
                 };
             } else {
                 if handle_is_number(&l) && handle_is_number(&r) {
+                    fd.binary(FType::Number, FType::Number);
                     let (lv, rv) = Util::upgrade_number(&l, &r);
                     return Result::Ok(Handle::Real(lv $op rv));
                 } else {
+                    fd.binary( FType::Unknown, FType::Unknown);
                     return Result::Err(Verror::from_str(format!(
                         "operator {} cannot work with type {} and {}",
                         stringify!($op),
@@ -1472,22 +1485,31 @@ macro_rules! bin_comparison {
         pub fn $name(
             l: Handle,
             r: Handle,
-            _: &mut Runptr,
+            run: &mut Runptr,
+            bcpos: usize,
         ) -> Result<Handle, Verror> {
+            let cref = run.borrow_mut().rcall_val();
+            let mut rref = cref.borrow_mut();
+            let fd = rref.fd.index_mut(bcpos);
+
             if handle_is_type_same(&l, &r) {
                 match l {
                     Handle::Int(lv) => {
+                        fd.binary(FType::Int, FType::Int);
                         return Result::Ok(Handle::Boolean(lv $op Util::must_int(&r)));
                     }
                     Handle::Real(lv) => {
+                        fd.binary(FType::Real, FType::Real);
                         return Result::Ok(Handle::Boolean(
                             lv $op Util::must_real(&r),
                         ));
                     }
                     Handle::Boolean(lv) => {
+                        fd.binary( FType::Boolean, FType::Boolean);
                         return Result::Ok(Handle::Boolean(lv $op Util::must_boolean(&r)));
                     }
                     Handle::Null => {
+                        fd.binary(FType::Null, FType::Null);
                         return Result::Ok(Handle::Boolean(true));
                     }
                     Handle::Str(lv) => {
@@ -1498,17 +1520,20 @@ macro_rules! bin_comparison {
                             _ => unreachable!(),
                         };
                         let rhs = rhs_borrow.string.as_str();
+                        fd.binary(FType::Str, FType::Str);
                         return Result::Ok(Handle::Boolean(lhs.$sop(rhs)));
                     },
                     _ => (),
                 };
             } else {
                 if handle_is_number(&l) && handle_is_number(&r) {
+                    fd.binary(FType::Number, FType::Number);
                     let (lv, rv) = Util::upgrade_number(&l, &r);
                     return Result::Ok(Handle::Boolean(lv $op rv));
                 }
             }
 
+            fd.binary( FType::Unknown, FType::Unknown);
             return Result::Err(Verror::from_str(format!(
                 "operator {} cannot work with type {} and {}",
                 stringify!($op),
@@ -1524,16 +1549,24 @@ impl Arithmetic {
         l: Handle,
         r: Handle,
         run: &mut Runptr,
+        bcpos: usize,
     ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
+                    fd.binary(FType::Int, FType::Int);
                     return Result::Ok(Handle::Int(lv + Util::must_int(&r)));
                 }
                 Handle::Real(lv) => {
+                    fd.binary(FType::Real, FType::Real);
                     return Result::Ok(Handle::Real(lv + Util::must_real(&r)));
                 }
                 Handle::Str(lv) => {
+                    fd.binary(FType::Str, FType::Str);
                     let mut o = String::from(&lv.borrow().string);
                     let borrow = match &r {
                         Handle::Str(v) => v.borrow(),
@@ -1547,6 +1580,7 @@ impl Arithmetic {
                     );
                 }
                 _ => {
+                    fd.binary(FType::Unknown, FType::Unknown);
                     return Result::Err(Verror::from_str(format!(
                         "operator + cannot work with type {} and {}",
                         handle_type_name(&l),
@@ -1556,18 +1590,11 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
+                fd.binary(FType::Number, FType::Number);
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv + rv));
-            } else if handle_is_str(&l) && handle_is_str(&r) {
-                let lv = Util::must_strref(&l);
-                let rv = Util::must_strref(&r);
-                let mut o = String::new();
-                o.push_str(&lv.borrow().string);
-                o.push_str(&rv.borrow().string);
-                return Result::Ok(
-                    run.borrow().g.borrow_mut().heap.new_string_handle(o),
-                );
             } else {
+                fd.binary(FType::Unknown, FType::Unknown);
                 return Result::Err(Verror::from_str(format!(
                     "operator + cannot work with type {} and {}",
                     handle_type_name(&l),
@@ -1577,10 +1604,19 @@ impl Arithmetic {
         }
     }
 
-    bin_function!(sub, -);
-    bin_function!(mul, *);
+    bin_arithmetic!(sub, -);
+    bin_arithmetic!(mul, *);
 
-    pub fn div(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn div(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1590,13 +1626,16 @@ impl Arithmetic {
                             "divide by 0".to_string(),
                         ));
                     }
+                    fd.binary(FType::Int, FType::Int);
                     return Result::Ok(Handle::Int(lv / rv));
                 }
                 Handle::Real(lv) => {
+                    fd.binary(FType::Real, FType::Real);
                     let rv = Util::must_real(&r);
                     return Result::Ok(Handle::Real(lv / rv));
                 }
                 _ => {
+                    fd.binary(FType::Unknown, FType::Unknown);
                     return Result::Err(Verror::from_str(format!(
                         "operator / cannot work with type {} and {}",
                         handle_type_name(&l),
@@ -1606,9 +1645,11 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
+                fd.binary(FType::Number, FType::Number);
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv / rv));
             } else {
+                fd.binary(FType::Unknown, FType::Unknown);
                 return Result::Err(Verror::from_str(format!(
                     "operator / cannot work with type {} and {}",
                     handle_type_name(&l),
@@ -1618,7 +1659,16 @@ impl Arithmetic {
         }
     }
 
-    pub fn mod_(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn mod_(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
@@ -1628,9 +1678,11 @@ impl Arithmetic {
                             "divide by 0".to_string(),
                         ));
                     }
+                    fd.binary(FType::Int, FType::Int);
                     return Result::Ok(Handle::Int(lv % rv));
                 }
                 _ => {
+                    fd.binary(FType::Unknown, FType::Unknown);
                     return Result::Err(Verror::from_str(format!(
                         "operator % cannot work with type {} and {}",
                         handle_type_name(&l),
@@ -1639,6 +1691,7 @@ impl Arithmetic {
                 }
             };
         } else {
+            fd.binary(FType::Unknown, FType::Unknown);
             return Result::Err(Verror::from_str(format!(
                 "operator % cannot work with type {} and {}",
                 handle_type_name(&l),
@@ -1647,14 +1700,25 @@ impl Arithmetic {
         }
     }
 
-    pub fn pow(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn pow(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
+                    fd.binary(FType::Int, FType::Int);
                     let rv = Util::must_int(&r);
                     return Result::Ok(Handle::Int(lv.pow(rv as u32)));
                 }
                 Handle::Real(lv) => {
+                    fd.binary(FType::Real, FType::Real);
                     let rv = Util::must_real(&r);
                     return Result::Ok(Handle::Real(lv.powf(rv as f64)));
                 }
@@ -1662,11 +1726,13 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
+                fd.binary(FType::Number, FType::Number);
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv.powf(rv)));
             }
         }
 
+        fd.binary(FType::Unknown, FType::Unknown);
         return Result::Err(Verror::from_str(format!(
             "pow needs both operand to be numbers, but got type {} and {}",
             handle_type_name(&l),
@@ -1676,28 +1742,42 @@ impl Arithmetic {
 }
 
 impl Comparison {
-    pub fn eq(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn eq(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match &l {
                 Handle::Int(lv) => {
+                    fd.binary(FType::Int, FType::Int);
                     return Result::Ok(Handle::Boolean(
                         *lv == Util::must_int(&r),
                     ));
                 }
                 Handle::Real(lv) => {
+                    fd.binary(FType::Real, FType::Real);
                     return Result::Ok(Handle::Boolean(
                         *lv == Util::must_real(&r),
                     ));
                 }
                 Handle::Boolean(lv) => {
+                    fd.binary(FType::Boolean, FType::Boolean);
                     return Result::Ok(Handle::Boolean(
                         *lv == Util::must_boolean(&r),
                     ));
                 }
                 Handle::Null => {
+                    fd.binary(FType::Null, FType::Null);
                     return Result::Ok(Handle::Boolean(true));
                 }
                 Handle::Str(lv) => {
+                    fd.binary(FType::Str, FType::Str);
                     let lhs_borrow = lv.borrow();
                     let lhs = lhs_borrow.string.as_str();
                     let rhs_borrow = match &r {
@@ -1709,46 +1789,54 @@ impl Comparison {
                     return Result::Ok(Handle::Boolean(lhs.eq(rhs)));
                 }
                 Handle::List(lv) => {
+                    fd.binary(FType::List, FType::List);
                     return Result::Ok(Handle::Boolean(Rc::ptr_eq(
                         &lv,
                         &Util::must_listref(&r),
                     )));
                 }
                 Handle::Object(lv) => {
+                    fd.binary(FType::Object, FType::Object);
                     return Result::Ok(Handle::Boolean(Rc::ptr_eq(
                         &lv,
                         &Util::must_objref(&r),
                     )));
                 }
                 Handle::Function(lv) => {
+                    fd.binary(FType::Function, FType::Function);
                     return Result::Ok(Handle::Boolean(Rc::ptr_eq(
                         &lv,
                         &Util::must_funcref(&r),
                     )));
                 }
                 Handle::NFunction(lv) => {
+                    fd.binary(FType::NFunction, FType::NFunction);
                     return Result::Ok(Handle::Boolean(Rc::ptr_eq(
                         &lv,
                         &Util::must_nfuncref(&r),
                     )));
                 }
                 Handle::Iter(lv) => {
+                    fd.binary(FType::Iter, FType::Iter);
                     return Result::Ok(Handle::Boolean(Rc::ptr_eq(
                         &lv,
                         &Util::must_iterref(&r),
                     )));
                 }
                 Handle::CallFrame(_) => {
+                    fd.binary(FType::Unknown, FType::Unknown);
                     return Result::Ok(Handle::Boolean(false));
                 }
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
+                fd.binary(FType::Number, FType::Number);
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Boolean(lv == rv));
             }
         }
 
+        fd.binary(FType::Unknown, FType::Unknown);
         return Result::Err(Verror::from_str(format!(
             "operator == cannot work with type {} and {}",
             handle_type_name(&l),
@@ -1756,28 +1844,42 @@ impl Comparison {
         )));
     }
 
-    pub fn ne(l: Handle, r: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn ne(
+        l: Handle,
+        r: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         if handle_is_type_same(&l, &r) {
             match l {
                 Handle::Int(lv) => {
+                    fd.binary(FType::Int, FType::Int);
                     return Result::Ok(Handle::Boolean(
                         lv != Util::must_int(&r),
                     ));
                 }
                 Handle::Real(lv) => {
+                    fd.binary(FType::Real, FType::Real);
                     return Result::Ok(Handle::Boolean(
                         lv != Util::must_real(&r),
                     ));
                 }
                 Handle::Boolean(lv) => {
+                    fd.binary(FType::Boolean, FType::Boolean);
                     return Result::Ok(Handle::Boolean(
                         lv != Util::must_boolean(&r),
                     ));
                 }
                 Handle::Null => {
+                    fd.binary(FType::Null, FType::Null);
                     return Result::Ok(Handle::Boolean(false));
                 }
                 Handle::Str(lv) => {
+                    fd.binary(FType::Str, FType::Str);
                     let lhs_borrow = lv.borrow();
                     let lhs = lhs_borrow.string.as_str();
                     let rhs_borrow = match &r {
@@ -1789,46 +1891,54 @@ impl Comparison {
                     return Result::Ok(Handle::Boolean(lhs.ne(rhs)));
                 }
                 Handle::List(lv) => {
+                    fd.binary(FType::List, FType::List);
                     return Result::Ok(Handle::Boolean(!Rc::ptr_eq(
                         &lv,
                         &Util::must_listref(&r),
                     )));
                 }
                 Handle::Object(lv) => {
+                    fd.binary(FType::Object, FType::Object);
                     return Result::Ok(Handle::Boolean(!Rc::ptr_eq(
                         &lv,
                         &Util::must_objref(&r),
                     )));
                 }
                 Handle::Function(lv) => {
+                    fd.binary(FType::Function, FType::Function);
                     return Result::Ok(Handle::Boolean(!Rc::ptr_eq(
                         &lv,
                         &Util::must_funcref(&r),
                     )));
                 }
                 Handle::NFunction(lv) => {
+                    fd.binary(FType::NFunction, FType::NFunction);
                     return Result::Ok(Handle::Boolean(!Rc::ptr_eq(
                         &lv,
                         &Util::must_nfuncref(&r),
                     )));
                 }
                 Handle::Iter(lv) => {
+                    fd.binary(FType::Iter, FType::Iter);
                     return Result::Ok(Handle::Boolean(!Rc::ptr_eq(
                         &lv,
                         &Util::must_iterref(&r),
                     )));
                 }
                 Handle::CallFrame(_) => {
+                    fd.binary(FType::Unknown, FType::Unknown);
                     return Result::Ok(Handle::Boolean(false));
                 }
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
+                fd.binary(FType::Number, FType::Number);
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Boolean(lv != rv));
             }
         }
 
+        fd.binary(FType::Unknown, FType::Unknown);
         return Result::Err(Verror::from_str(format!(
             "operator != cannot work with type {} and {}",
             handle_type_name(&l),
@@ -1947,11 +2057,26 @@ impl Conversion {
 }
 
 impl Unary {
-    pub fn neg(v: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn neg(
+        v: Handle,
+        run: &mut Runptr,
+        bcpos: usize,
+    ) -> Result<Handle, Verror> {
+        let cref = run.borrow_mut().rcall_val();
+        let mut rref = cref.borrow_mut();
+        let fd = rref.fd.index_mut(bcpos);
+
         match &v {
-            Handle::Int(vv) => return Result::Ok(Handle::Int(-*vv)),
-            Handle::Real(vv) => return Result::Ok(Handle::Real(-*vv)),
+            Handle::Int(vv) => {
+                fd.unary(FType::Int);
+                return Result::Ok(Handle::Int(-*vv));
+            }
+            Handle::Real(vv) => {
+                fd.unary(FType::Real);
+                return Result::Ok(Handle::Real(-*vv));
+            }
             _ => {
+                fd.unary(FType::Unknown);
                 return Result::Err(Verror::from_str(format!(
                     "type {} cannot do negate operation",
                     handle_type_name(&v)
@@ -1960,11 +2085,15 @@ impl Unary {
         };
     }
 
-    pub fn not(v: Handle, run: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn not(v: Handle, run: &mut Runptr, _: usize) -> Result<Handle, Verror> {
         return Result::Ok(Handle::Boolean(!Conversion::to_boolean(&v, run)));
     }
 
-    pub fn typeof_(v: Handle, run: &mut Runptr) -> Result<Handle, Verror> {
+    pub fn typeof_(
+        v: Handle,
+        run: &mut Runptr,
+        _: usize,
+    ) -> Result<Handle, Verror> {
         return Result::Ok(
             run.borrow_mut()
                 .g
@@ -1973,7 +2102,12 @@ impl Unary {
                 .new_str_handle(handle_type_name(&v)),
         );
     }
-    pub fn sizeof(v: Handle, _: &mut Runptr) -> Result<Handle, Verror> {
+
+    pub fn sizeof(
+        v: Handle,
+        _: &mut Runptr,
+        _: usize,
+    ) -> Result<Handle, Verror> {
         return Result::Ok(Handle::Int(handle_sizeof(&v) as i64));
     }
 }

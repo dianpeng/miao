@@ -1921,19 +1921,19 @@ impl Parser {
         }
 
         let r = match bc {
-            Bytecode::Add => Arithmetic::add(l, r, &mut run),
-            Bytecode::Sub => Arithmetic::sub(l, r, &mut run),
-            Bytecode::Mul => Arithmetic::mul(l, r, &mut run),
-            Bytecode::Div => Arithmetic::div(l, r, &mut run),
-            Bytecode::Pow => Arithmetic::pow(l, r, &mut run),
-            Bytecode::Mod => Arithmetic::mod_(l, r, &mut run),
+            Bytecode::Add => Arithmetic::add(l, r, &mut run, 0),
+            Bytecode::Sub => Arithmetic::sub(l, r, &mut run, 0),
+            Bytecode::Mul => Arithmetic::mul(l, r, &mut run, 0),
+            Bytecode::Div => Arithmetic::div(l, r, &mut run, 0),
+            Bytecode::Pow => Arithmetic::pow(l, r, &mut run, 0),
+            Bytecode::Mod => Arithmetic::mod_(l, r, &mut run, 0),
 
-            Bytecode::Lt => Comparison::lt(l, r, &mut run),
-            Bytecode::Le => Comparison::le(l, r, &mut run),
-            Bytecode::Gt => Comparison::gt(l, r, &mut run),
-            Bytecode::Ge => Comparison::ge(l, r, &mut run),
-            Bytecode::Eq => Comparison::eq(l, r, &mut run),
-            Bytecode::Ne => Comparison::ne(l, r, &mut run),
+            Bytecode::Lt => Comparison::lt(l, r, &mut run, 0),
+            Bytecode::Le => Comparison::le(l, r, &mut run, 0),
+            Bytecode::Gt => Comparison::gt(l, r, &mut run, 0),
+            Bytecode::Ge => Comparison::ge(l, r, &mut run, 0),
+            Bytecode::Eq => Comparison::eq(l, r, &mut run, 0),
+            Bytecode::Ne => Comparison::ne(l, r, &mut run, 0),
             _ => unreachable!(),
         };
 
@@ -2083,10 +2083,10 @@ impl Parser {
             }
 
             let fold_result = match bc.clone() {
-                Bytecode::Neg => Unary::neg(handle, &mut run),
-                Bytecode::Not => Unary::not(handle, &mut run),
-                Bytecode::Typeof => Unary::typeof_(handle, &mut run),
-                Bytecode::Sizeof => Unary::sizeof(handle, &mut run),
+                Bytecode::Neg => Unary::neg(handle, &mut run, 0),
+                Bytecode::Not => Unary::not(handle, &mut run, 0),
+                Bytecode::Typeof => Unary::typeof_(handle, &mut run, 0),
+                Bytecode::Sizeof => Unary::sizeof(handle, &mut run, 0),
                 _ => break,
             };
 

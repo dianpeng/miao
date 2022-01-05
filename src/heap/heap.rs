@@ -415,6 +415,14 @@ impl GHeap {
 
     // ------------------------------------------------------------------------
     // function
+    pub fn new_fold_function(&mut self) -> FuncRef {
+        self.try_gc();
+        let func_obj = Function::new_fold();
+        let gcp = Rc::clone(&func_obj);
+        self.current.push(gcp);
+        return func_obj;
+    }
+
     pub fn new_function(
         &mut self,
         this_p: ProtoRc,
@@ -422,9 +430,7 @@ impl GHeap {
         uplist: HandleList,
     ) -> FuncRef {
         self.try_gc();
-
         let func_obj = Function::new(this_p, uplist);
-
         let gcp = Rc::clone(&func_obj);
         self.current.push(gcp);
 

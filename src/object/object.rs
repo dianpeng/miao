@@ -6,8 +6,9 @@ use std::rc::Rc;
 use std::rc::Weak;
 
 use crate::bc::bytecode::*;
-use crate::interp::exec::Conversion;
 use crate::heap::heap::*;
+use crate::interp::exec::Conversion;
+use crate::ic::feedback::{FeedbackList};
 
 // -----------------------------------------------------------------------------
 // Execution of the runtime, ie the VM.
@@ -235,14 +236,16 @@ impl Run {
             gc: GC::nil(),
         }))
     }
-    // only used when doing constant folding during the parsing
+    // only used when doing constant folding during the parsing.
     pub fn new_fold(g: Gptr) -> Runptr {
         let x = g.borrow_mut().heap.new_obj();
+        let fake_f = g.borrow_mut().heap.new_fold_function();
+
         return Runptr::new(RefCell::new(Run {
             g: g,
             global: x,
             stack: HandleList::new(),
-            rcall: Option::None,
+            rcall: Option::Some(fake_f),
             rframe: Option::None,
             trace_sinker: unreachable_trace_sinker,
             gc: GC::nil(),
@@ -268,6 +271,9 @@ impl Run {
     }
     pub fn rcall_ref(&self) -> &FuncRef {
         self.rcall.as_ref().unwrap()
+    }
+    pub fn rcall_val(&self) -> FuncRef {
+        return FuncRef::clone(self.rcall.as_ref().unwrap());
     }
 
     // global related manipulation
@@ -1174,15 +1180,27 @@ impl HRef for Str {
 // upvalue indication.
 pub struct Function {
     pub proto: ProtoRc,
+    pub fd: FeedbackList,
     upvalue: HandleList,
     gc: GC,
 }
 
 impl Function {
+    // a fake function newed for performing constant folding during parsing
+    pub fn new_fold() -> FuncRef {
+        // create a fake bytecode array along with faked protorc
+        let mut bc = BytecodeArray::new();
+        bc.emit(Bytecode::LoadNull);
+        bc.emit(Bytecode::Halt);
+        return Function::new(Rc::new(Prototype::new(bc)), HandleList::new());
+    }
+
     pub fn new(this_p: ProtoRc, uplist: HandleList) -> FuncRef {
+        let code_size = this_p.code.array.len() as u32;
         Rc::new(RefCell::new(Function {
             proto: this_p,
             upvalue: uplist,
+            fd: FeedbackList::new(code_size),
             gc: GC::nil(),
         }))
     }

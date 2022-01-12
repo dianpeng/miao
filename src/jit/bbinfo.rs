@@ -1,5 +1,6 @@
 use crate::bc::bytecode::*;
 use crate::object::object::*;
+use bitvec::prelude::*;
 
 #[derive(Clone, PartialEq)]
 pub enum JumpType {
@@ -40,7 +41,7 @@ pub struct BBInfo {
 
     // The variable that has been accessed both inside and outside of the loop,
     // ie a loop induction variable
-    pub loop_iv_assignment: Vec<bool>,
+    pub loop_iv_assignment: BitVec,
 }
 
 pub struct LoopRange(Vec<(u32, u32)>);
@@ -196,7 +197,7 @@ impl BBInfo {
             lhs: Option::None,
             rhs: Option::None,
             pred: Vec::new(),
-            loop_iv_assignment: Vec::new(),
+            loop_iv_assignment: BitVec::new(),
         }
     }
 
@@ -208,7 +209,7 @@ impl BBInfo {
             lhs: Option::None,
             rhs: Option::None,
             pred: Vec::new(),
-            loop_iv_assignment: Vec::new(),
+            loop_iv_assignment: BitVec::new(),
         }
     }
 
@@ -419,7 +420,6 @@ impl BBInfoBuilder {
         wqueue.push(0);
 
         while wqueue.len() != 0 {
-
             let bb_idx = wqueue.pop().unwrap();
             bc_idx = self.out.bbinfo_list[bb_idx as usize].bc_from;
 
@@ -581,9 +581,9 @@ impl BBInfoBuilder {
 
     // analyze the bytecode lies in range between [start, end), the [start, end)
     // forms a valid basic block
-    fn do_loop_iv_assignment_in_range(&self, start: u32, end: u32) -> Vec<bool> {
+    fn do_loop_iv_assignment_in_range(&self, start: u32, end: u32) -> BitVec {
         let mut idx = start;
-        let mut assignment = Vec::<bool>::new();
+        let mut assignment = BitVec::new();
         assignment.resize(self.tmp_var_size(), false);
 
         while idx < end {
@@ -594,7 +594,7 @@ impl BBInfoBuilder {
             match bytecode {
                 Bytecode::Store(idx) => {
                     if self.is_tmp_var(idx) {
-                        assignment[idx as usize] = true;
+                        *assignment.get_mut(idx as usize).unwrap() = true;
                     }
                 }
                 _ => (),
@@ -639,13 +639,14 @@ impl BBInfoBuilder {
     fn do_loop_iv_assignment(&mut self) {
         self.out.loop_range.assert_no_overlap();
 
-        let mut visited: Vec<bool> = vec![false; self.out.bbinfo_list.len()];
+        let mut visited = bitvec![u32, Msb0;];
+        visited.resize(self.out.bbinfo_list.len(), false);
 
         for (start, end) in self.out.loop_range.0.iter() {
             let bb_list = self.get_bb_from_range(*start, *end);
             for bb_id in bb_list.iter() {
                 if !visited[*bb_id as usize] {
-                    visited[*bb_id as usize] = true;
+                    *visited.get_mut(*bb_id as usize).unwrap() = true;
 
                     let (from, to) = {
                         let bb = &mut self.out.bbinfo_list[*bb_id as usize];

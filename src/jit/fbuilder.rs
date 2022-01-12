@@ -1240,8 +1240,7 @@ impl FBuilder {
                     .rhs
                     .clone();
 
-                let mut cfg = Nref::clone(&env.borrow().cfg);
-
+                let cfg = Nref::clone(&env.borrow().cfg);
                 self.link_cfg_edge(&cfg, lhs);
                 self.link_cfg_edge(&cfg, rhs);
             }
@@ -1375,7 +1374,6 @@ mod fbuilder_tests {
         };
 
         let code_string = proto.code.dump();
-        println!("{}", code_string);
 
         // (1) creating the function object, since we don't have any runtime
         //     information, so just doing nothing at all here.

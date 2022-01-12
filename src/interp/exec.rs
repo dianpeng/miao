@@ -818,12 +818,7 @@ impl Exec {
     fn jump_false(&mut self, run: &mut Runptr) -> bool {
         let tos = self.top0(run);
         self.pop(run);
-
-        if Conversion::to_boolean(&tos, run) {
-            return false;
-        } else {
-            return true;
-        }
+        return !Conversion::to_boolean(&tos, run);
     }
 
     // and jump, it takes the TOS as condition to check, if it is false, then
@@ -860,16 +855,6 @@ impl Exec {
         // a ternary jump jump when the condition evaluation fails, ie the jump
         // targets at the |else| branch inside of the ternary expression
         return !cond_boolean;
-    }
-
-    // always consume the top of stack(TOS) value and if the condition is false
-    // then perform the jump. Loop jump is used to break out of the loop when
-    // loop condition doesn't satisfy
-    fn loop_jump(&mut self, run: &mut Runptr) -> bool {
-        let tos = self.top0(run);
-        let cond = Conversion::to_boolean(&tos, run);
-        self.pop(run);
-        return !cond;
     }
 
     // global loading. for each run we allow user to intercept the global
@@ -1152,10 +1137,8 @@ impl Exec {
                         }
                         true
                     }
-                    Bytecode::LoopJump(cp) => {
-                        if self.loop_jump(run) {
-                            pc = cp as usize;
-                        }
+                    Bytecode::LoopBack(cp) => {
+                        pc = cp as usize;
                         true
                     }
                     Bytecode::Jump(cp) => {

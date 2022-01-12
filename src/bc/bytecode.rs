@@ -86,7 +86,7 @@ pub enum Bytecode {
 
     // Control flow
     JumpFalse(CodePos),
-    LoopJump(CodePos),
+    LoopBack(CodePos),
     Jump(CodePos),
 
     // Used for logic operation/expression
@@ -201,12 +201,6 @@ impl Label {
     }
     pub fn jump_here(&self, ba: &mut BytecodeArray) {
         self.jump(ba, ba.code_pos());
-    }
-    pub fn loop_jump(&self, ba: &mut BytecodeArray, arg: CodePos) {
-        ba.patch(self.pos, Bytecode::LoopJump(arg));
-    }
-    pub fn loop_jump_here(&self, ba: &mut BytecodeArray) {
-        self.loop_jump(ba, ba.code_pos());
     }
     pub fn and(&self, ba: &mut BytecodeArray, arg: CodePos) {
         ba.patch(self.pos, Bytecode::And(arg));

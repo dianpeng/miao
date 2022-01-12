@@ -607,10 +607,6 @@ impl Parser {
         let mut x = self.bc();
         l.jump_here(&mut *x);
     }
-    fn emit_loop_jump_here(&self, l: &mut Label) {
-        let mut x = self.bc();
-        l.loop_jump_here(&mut *x);
-    }
     fn emit_and_here(&self, l: &mut Label) {
         let mut x = self.bc();
         l.and_here(&mut *x);
@@ -1449,7 +1445,8 @@ impl Parser {
 
         self.patch_continue_list();
         self.bc()
-            .emit_d(Bytecode::Jump(loop_header_codepos), self.dbg());
+            .emit_d(Bytecode::LoopBack(loop_header_codepos), self.dbg());
+
         self.patch_break_list();
 
         self.leave();
@@ -1509,7 +1506,7 @@ impl Parser {
         //
         //       ---------------------
         //       |   iterator_start  |
-        //       |    loop_jump L:m  |
+        //       |   jump_false L:m  |
         //       ---------------------
         //                |
         //                |
@@ -1528,7 +1525,7 @@ impl Parser {
         //               \-/
         //       |------------------|
         //       |  iterator_next   |
-        //       |    loop_jump L:m |
+        //       |   jump_false L:m |
         //       |    jump L:body   |
         //       |  iterator_next   |
         //       |    refresh iv    |
@@ -1574,7 +1571,7 @@ impl Parser {
         //  1) iterator_has  ;; get the iterator's next method call and check
         //                   ;; whether we can continue
         //
-        //  2) loop_jump     ;; directly jump out of the tail part if we cannot
+        //  2) jump_false     ;; directly jump out of the tail part if we cannot
         //                   ;; continue;
         //
         //  3) iterator_next ;; get the iterator's next value
@@ -1603,13 +1600,13 @@ impl Parser {
 
         // jump to loop header for next iteration
         self.bc()
-            .emit_d(Bytecode::Jump(loop_header_codepos), self.dbg());
+            .emit_d(Bytecode::LoopBack(loop_header_codepos), self.dbg());
 
         // Okay, if we reach here it means the real end of the loop, ie the SSA
         // format's merge node after the loop. Now, we just join all the out of
         // body jump to this position
-        self.emit_loop_jump_here(&mut loop_rotation_label);
-        self.emit_loop_jump_here(&mut loop_tail_label);
+        self.emit_jump_false_here(&mut loop_rotation_label);
+        self.emit_jump_false_here(&mut loop_tail_label);
 
         // Since we are in the loop body, we need to patch all the pending loop
         // control operations, ie continue, break etc ...

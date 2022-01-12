@@ -281,14 +281,10 @@ impl Exec {
             }
         }
 
-        let mut dup_run = Runptr::clone(run);
         let func = {
             let run_borrow = run.borrow_mut();
             let mut g_borrow = run_borrow.g.borrow_mut();
-            let x =
-                g_borrow
-                    .heap
-                    .new_function_handle(v, &mut dup_run, upvalue_list);
+            let x = g_borrow.heap.new_function_handle(v, upvalue_list);
             x
         };
 
@@ -989,13 +985,7 @@ impl Exec {
     ) -> Result<Vresult, Verror> {
         assert!(main.argument_count == 0);
 
-        let mut dup_run = Rc::clone(&run);
-        let main_func = run
-            .borrow_mut()
-            .g
-            .borrow_mut()
-            .heap
-            .new_main(main, &mut dup_run);
+        let main_func = run.borrow_mut().g.borrow_mut().heap.new_main(main);
 
         let gptr = Gptr::clone(&run.borrow().g);
 

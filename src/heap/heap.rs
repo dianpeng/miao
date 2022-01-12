@@ -426,7 +426,6 @@ impl GHeap {
     pub fn new_function(
         &mut self,
         this_p: ProtoRc,
-        _: &mut Runptr,
         uplist: HandleList,
     ) -> FuncRef {
         self.try_gc();
@@ -437,25 +436,20 @@ impl GHeap {
         return func_obj;
     }
 
-    pub fn new_main(&mut self, this_p: ProtoRc, run: &mut Runptr) -> FuncRef {
-        return self.new_function(this_p, run, HandleList::new());
+    pub fn new_main(&mut self, this_p: ProtoRc) -> FuncRef {
+        return self.new_function(this_p, HandleList::new());
     }
 
     pub fn new_function_handle(
         &mut self,
         this_p: ProtoRc,
-        run: &mut Runptr,
         uplist: HandleList,
     ) -> Handle {
-        return Handle::Function(self.new_function(this_p, run, uplist));
+        return Handle::Function(self.new_function(this_p, uplist));
     }
 
-    pub fn new_main_handle(
-        &mut self,
-        this_p: ProtoRc,
-        run: &mut Runptr,
-    ) -> Handle {
-        return Handle::Function(self.new_main(this_p, run));
+    pub fn new_main_handle(&mut self, this_p: ProtoRc) -> Handle {
+        return Handle::Function(self.new_main(this_p));
     }
 
     // ------------------------------------------------------------------------

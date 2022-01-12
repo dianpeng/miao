@@ -13,7 +13,7 @@ use crate::jit::node::*;
 
 fn p_op(x: &Oref, nid: Nid) -> String {
     let shape_string = match x.tier {
-        OpTier::Imm => "hexgon",
+        OpTier::Imm => "hexagon",
         OpTier::Bval => "octagon",
         OpTier::Cfg => "box",
         OpTier::Rval => "circle",
@@ -34,7 +34,7 @@ fn p_op(x: &Oref, nid: Nid) -> String {
     };
 
     return format!(
-        "shape=\"{}\" color=\"{}\" label=\"{:?}_{}\"",
+        "shape=\"{}\" color=\"{}\" label=\"{:?}[{}]\"",
         shape_string, shape_color, x.op, nid
     );
 }
@@ -121,15 +121,18 @@ impl Nprinter {
             let name = nm(front.borrow().id);
             for xx in front.borrow().value.iter() {
                 let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=black]", &name, &tname));
+                buf.push(format!("{} -> {} [color=\"black\"]", &name, &tname));
+                wq.push_back(Nref::clone(&xx));
             }
             for xx in front.borrow().cfg.into_iter() {
                 let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=red]", &name, &tname));
+                buf.push(format!("{} -> {} [color=\"red\"]", &name, &tname));
+                wq.push_back(Nref::clone(&xx));
             }
             for xx in front.borrow().effect.iter() {
                 let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=green]", &name, &tname));
+                buf.push(format!("{} -> {} [color=\"green\"]", &name, &tname));
+                wq.push_back(Nref::clone(&xx));
             }
         }
 
@@ -140,7 +143,7 @@ impl Nprinter {
         self.pass_define_node();
         self.pass_define_link();
         return format!(
-            "graph xxx {{ {} {} }}",
+            "digraph xxx {{\n{}\n{}\n}}",
             self.node_define_part, self.node_link_part
         );
     }
@@ -154,8 +157,8 @@ impl Nprinter {
     }
 }
 
-pub fn print_graph(x: Nref) -> String {
+pub fn print_graph(x: &Nref) -> String {
     assert!(x.borrow().is_cfg_start());
-    let mut printer = Nprinter::new(x);
+    let mut printer = Nprinter::new(Nref::clone(x));
     return printer.print();
 }

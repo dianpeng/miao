@@ -1,5 +1,6 @@
 use crate::bc::bytecode::*;
 use crate::jit::bbinfo::*;
+use crate::jit::j::*;
 use crate::jit::node::*;
 use crate::object::object::*;
 
@@ -41,7 +42,7 @@ struct FBuilder {
     arg_count: u32,
 
     // Others
-    g: Graphptr,
+    jit: Jitptr,
 
     // BBInfoSet, obtained from BBInfoBuilder
     bbinfo_set: BBInfoSet,
@@ -71,11 +72,11 @@ impl Env {
 }
 
 impl FBuilder {
-    fn gptr(&self) -> Graphptr {
-        return Graphptr::clone(&self.g);
+    fn jptr(&self) -> Jitptr {
+        return Jitptr::clone(&self.jit);
     }
     fn mptr(&self) -> Mpptr {
-        return Mpptr::clone(&self.g.borrow().mpool);
+        return Mpptr::clone(&self.jit.borrow().mpool);
     }
     fn bc_at(&self, x: u32) -> Bytecode {
         return self.function.borrow().proto.code.array[x as usize].clone();
@@ -122,10 +123,18 @@ impl FBuilder {
 
             match pred_len {
                 1 => {
+                    let prev_env_id = {
+                        let jump_edge = self.bbinfo_set.bbinfo_list
+                            [bbinfo_id as usize]
+                            .pred[0]
+                            .clone();
+                        assert!(!jump_edge.is_loop_back());
+                        jump_edge.bid
+                    };
                     // Joining predecessor's block(env)'s stack value, in this
                     // case we just have one predecessor, so just duplicate
                     // the stack from that one.
-                    let prev_env = self.get_env(bbinfo_id);
+                    let prev_env = self.get_env(prev_env_id);
                     debug_assert!(prev_env.borrow().visited);
                     new_env.borrow_mut().stack = prev_env.borrow().stack.clone();
                 }
@@ -151,7 +160,7 @@ impl FBuilder {
                             .iter()
                         {
                             let mut synth = 0;
-                            let bbinfo_id = {
+                            let prev_env_id = {
                                 match p.jtype {
                                     JumpType::LoopBack => {
                                         continue;
@@ -170,7 +179,7 @@ impl FBuilder {
                             is_synth[idx] = synth;
                             idx += 1;
 
-                            let prev_env = self.get_env(bbinfo_id);
+                            let prev_env = self.get_env(prev_env_id);
                             debug_assert!(prev_env.borrow().visited);
 
                             let addition = if synth != 0 { 1 } else { 0 };
@@ -367,7 +376,7 @@ impl FBuilder {
             // add the effect node into current BB's effect list
             {
                 let cur_env = self.cur_env();
-                Node::add_control(&mut cur_env.borrow_mut().cfg, Nref::clone(x));
+                Node::add_effect(&mut cur_env.borrow_mut().cfg, Nref::clone(x));
             }
 
             // snapshot the program as deoptimization entry
@@ -447,7 +456,7 @@ impl FBuilder {
     // ====================================================================
     // Deoptimization entry
     fn add_deopt(&mut self, bc: u32) {
-        debug_assert!(self.g.borrow().deopt_table[bc as usize].is_none());
+        debug_assert!(self.jit.borrow().deopt_table[bc as usize].is_none());
         let mut snap = self.mptr().borrow_mut().new_snapshot(bc);
         let env = self.cur_env();
         let mut stk_idx = 0;
@@ -461,7 +470,7 @@ impl FBuilder {
             Node::add_value(&mut snap, restore);
             stk_idx += 1;
         }
-        self.g.borrow_mut().deopt_table[bc as usize] = Option::Some(snap);
+        self.jit.borrow_mut().deopt_table[bc as usize] = Option::Some(snap);
     }
 
     // ====================================================================
@@ -997,7 +1006,8 @@ impl FBuilder {
 
             // notes, Halt is not written here since it is a control flow
             // indicator, which is taken cared specially
-            _ => {
+            xx @ _ => {
+                println!("what? {:?}", xx);
                 unreachable!();
             }
         };
@@ -1066,11 +1076,13 @@ impl FBuilder {
     // will create a temporary Env on top of env_list and create the correspond
     // basic block in noder. It will generate the full IR graph in that block
     fn build_one_bb(&mut self, bbinfo_id: u32) -> bool {
+        println!("BBB: {}", bbinfo_id);
         self.enter_env(bbinfo_id);
+        self.cur_env().borrow_mut().visited = true;
+
         if !self.build_bc_in_bb() {
             return false;
         }
-        self.cur_env().borrow_mut().visited = true;
         self.leave_env();
         return true;
     }
@@ -1140,6 +1152,7 @@ impl FBuilder {
             let x = &self.bbinfo_set.bbinfo_list[bbinfo_id as usize];
             (x.bc_from, x.bc_to)
         };
+        println!("CFG: {}", bc_to);
         match self.bc_at(bc_to) {
             Bytecode::Ternary(_)
             | Bytecode::JumpFalse(_)
@@ -1164,7 +1177,21 @@ impl FBuilder {
                 return x;
             }
 
-            _ => unreachable!(),
+            xx @ _ => {
+                unreachable!();
+            }
+        };
+    }
+
+    fn link_cfg_edge(&self, cur_cfg: &Nref, j: Option<JumpEdge>) {
+        match j {
+            Option::Some(je) => {
+                let env = self.get_env(je.bid);
+                let cfg = Nref::clone(&env.borrow().cfg);
+                let mut cur = Nref::clone(cur_cfg);
+                Node::add_control(&mut cur, cfg);
+            }
+            _ => (),
         };
     }
 
@@ -1177,9 +1204,9 @@ impl FBuilder {
 
         let bb_size = self.bbinfo_set.bbinfo_list.len();
 
-        // create all the Env object according to the bbinfo_set, notes this
-        // pass doesn't actually link the BB for simplicity. The linking is
-        // been part the code generation phas in each basic block
+        // (0) create all the Env object according to the bbinfo_set, notes this
+        //     pass doesn't actually link the BB for simplicity. The linking is
+        //     been part the code generation phas in each basic block
         {
             self.env_from_bbinfo_id.resize(bb_size, 0);
             let mut bbinfo_id = 0;
@@ -1195,6 +1222,26 @@ impl FBuilder {
                     (self.env_list.len() - 1) as u32;
 
                 bbinfo_id += 1;
+            }
+        }
+
+        // (1) linking all the nodes together based on the linking marker
+        {
+            for env in self.env_list.iter() {
+                let lhs = self.bbinfo_set.bbinfo_list
+                    [env.borrow().bbinfo_id as usize]
+                    .lhs
+                    .clone();
+
+                let rhs = self.bbinfo_set.bbinfo_list
+                    [env.borrow().bbinfo_id as usize]
+                    .rhs
+                    .clone();
+
+                let mut cfg = Nref::clone(&env.borrow().cfg);
+
+                self.link_cfg_edge(&cfg, lhs);
+                self.link_cfg_edge(&cfg, rhs);
             }
         }
     }
@@ -1215,31 +1262,35 @@ impl FBuilder {
         //     table.
         {
             let first_bb = Nref::clone(&self.env_list[0].borrow().cfg);
-            let mut start = Nref::clone(&self.gptr().borrow().cfg_start);
-            let end = Nref::clone(&self.gptr().borrow().cfg_end);
+            let mut start = Nref::clone(&self.jptr().borrow().cfg_start);
+            let end = Nref::clone(&self.jptr().borrow().cfg_end);
 
             // linking the start directly to the first_bb
             Node::add_control(&mut start, first_bb);
 
             // add return region
-            {
+            if self.return_list.len() != 0 {
                 let mut merge = self
                     .mptr()
                     .borrow_mut()
                     .new_cfg_merge_return(self.bc_max_size());
+
                 Node::add_control(&mut merge, Nref::clone(&end));
+
                 for xx in self.return_list.iter_mut() {
                     Node::add_control(xx, Nref::clone(&merge));
                 }
             }
 
             // add halt region
-            {
+            if self.halt_list.len() != 0 {
                 let mut merge = self
                     .mptr()
                     .borrow_mut()
                     .new_cfg_merge_halt(self.bc_max_size());
+
                 Node::add_control(&mut merge, Nref::clone(&end));
+
                 for xx in self.halt_list.iter_mut() {
                     Node::add_control(xx, Nref::clone(&merge));
                 }
@@ -1253,14 +1304,14 @@ impl FBuilder {
         fref: FuncRef,
         acount: u32,
         osr: Option<OSRInfo>,
-        g: Graphptr,
+        jit: Jitptr,
     ) -> FBuilder {
         let bbinfo_set = BBInfoBuilder::build(FuncRef::clone(&fref), acount);
 
         FBuilder {
             function: fref,
             arg_count: acount,
-            g: g,
+            jit: jit,
             bbinfo_set: bbinfo_set,
             osr: osr,
             env_list: EnvList::new(),
@@ -1271,8 +1322,8 @@ impl FBuilder {
         }
     }
 
-    pub fn build_func(fref: FuncRef, acount: u32, g: Graphptr) -> bool {
-        let mut x = FBuilder::new(fref, acount, Option::None, g);
+    pub fn build_func(fref: FuncRef, acount: u32, jit: Jitptr) -> bool {
+        let mut x = FBuilder::new(fref, acount, Option::None, jit);
         return x.build();
     }
 }
@@ -1280,4 +1331,69 @@ impl FBuilder {
 // --------------------------------------------------------------------------
 // Testing
 
+#[cfg(test)]
+mod fbuilder_tests {
+    use super::*;
+    use crate::heap::heap::*;
+    use crate::jit::j::*;
+    use crate::jit::node_print::*;
+    use crate::syntax::parser::*;
 
+    // ----------------------------------------------------------------------
+    // basic
+    //
+    // printing the code with its bytecode and also its graph representation
+    fn print_code(code: &str) -> Option<(String, String)> {
+        let g = G::new(GHeapConfig::default());
+
+        // (0) doing the parsing, now the code has been transferred into the
+        //     bytecode sequenecs
+        let proto = match do_parse(Gptr::clone(&g), code, "[tests]") {
+            Result::Ok(v) => ProtoRc::new(v),
+            Result::Err(e) => {
+                println!(
+                    "parsing failed: {}@{} {}",
+                    e.column, e.line, e.description
+                );
+                return Option::None;
+            }
+        };
+
+        let code_string = proto.code.dump();
+        println!("{}", code_string);
+
+        // (1) creating the function object, since we don't have any runtime
+        //     information, so just doing nothing at all here.
+        let func = g.borrow_mut().heap.new_function(proto, HandleList::new());
+
+        // (2) building the graph
+        let jit = Jit::new();
+        assert!(FBuilder::build_func(func, 0, Jitptr::clone(&jit)));
+
+        // (3) printing into string
+        let graph_string = print_graph(&jit.borrow().cfg_start);
+
+        return Option::Some((code_string, graph_string));
+    }
+
+    #[test]
+    fn basic() {
+        match print_code(
+            "let a = 100; if a > 10  return a * 2; else return 100; ",
+        ) {
+            Option::Some((a, b)) => {
+                println!("========================================");
+                println!("            bytecode");
+                println!("========================================");
+                println!("{}", a);
+
+                println!("========================================");
+                println!("            graph");
+                println!("========================================");
+                println!("{}", b);
+            }
+
+            _ => (),
+        };
+    }
+}

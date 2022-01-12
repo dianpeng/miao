@@ -83,6 +83,10 @@ impl JumpEdge {
             bid: id,
         }
     }
+
+    pub fn is_loop_back(&self) -> bool {
+        return self.jtype == JumpType::LoopBack;
+    }
 }
 
 impl LoopRange {
@@ -310,7 +314,6 @@ impl BBInfoBuilder {
         while bc_idx < bc_len {
             let bytecode = self.bc_at(bc_idx);
 
-            bc_idx += 1;
             match bytecode {
                 Bytecode::JumpFalse(_)
                 | Bytecode::LoopBack(_)
@@ -324,6 +327,8 @@ impl BBInfoBuilder {
                 }
                 _ => (),
             };
+
+            bc_idx += 1;
         }
 
         unreachable!();
@@ -350,7 +355,7 @@ impl BBInfoBuilder {
         // (2) check whether jumps into the middle of a existed BB
         let mut new_range = Option::<(u32, u32)>::None;
         for bb in self.out.bbinfo_list.iter_mut() {
-            if bb.bc_from < cp && bb.bc_to > cp {
+            if bb.bc_from < cp && bb.bc_to >= cp {
                 // the jump jumps into the middle of an already existed block,
                 // so split the block right at the position of cp
                 let new_end = bb.bc_to;
@@ -413,15 +418,15 @@ impl BBInfoBuilder {
         self.add_bbinfo(0, Option::None);
         wqueue.push(0);
 
-        while wqueue.len() > 0 {
+        while wqueue.len() != 0 {
+
             let bb_idx = wqueue.pop().unwrap();
             bc_idx = self.out.bbinfo_list[bb_idx as usize].bc_from;
 
             let last_jump = self.scan_until_jump(bc_idx + 1);
             let bytecode = self.bc_at(last_jump);
 
-            // assignment of bytecode range's end, also off by 1
-            self.out.bbinfo_list[bb_idx as usize].bc_to = last_jump + 1;
+            self.out.bbinfo_list[bb_idx as usize].bc_to = last_jump;
             self.out.bc_to_map_bbinfo[(last_jump + 1) as usize] =
                 Option::Some(bb_idx);
 
@@ -443,7 +448,7 @@ impl BBInfoBuilder {
                     // true branch
                     {
                         let (idx, is_new) = self.add_bbinfo(
-                            bc_idx + 1,
+                            last_jump + 1,
                             Option::Some(JumpEdge::new_true(bb_idx)),
                         );
 
@@ -499,7 +504,7 @@ impl BBInfoBuilder {
                     // true jump
                     {
                         let (idx, is_new) = self.add_bbinfo(
-                            bc_idx + 1,
+                            last_jump + 1,
                             Option::Some(JumpEdge::new_true(bb_idx)),
                         );
                         if is_new {
@@ -526,7 +531,7 @@ impl BBInfoBuilder {
                     // false jump
                     {
                         let (idx, is_new) = self.add_bbinfo(
-                            bc_idx + 1,
+                            last_jump + 1,
                             Option::Some(JumpEdge::new_false(bb_idx)),
                         );
                         if is_new {
@@ -552,7 +557,7 @@ impl BBInfoBuilder {
                     // true jump
                     {
                         let (idx, is_new) = self.add_bbinfo(
-                            bc_idx + 1,
+                            last_jump + 1,
                             Option::Some(JumpEdge::new_true(bb_idx)),
                         );
                         if is_new {
@@ -567,7 +572,9 @@ impl BBInfoBuilder {
                 // future analysis
                 Bytecode::Return(_) | Bytecode::Halt => (),
 
-                _ => (),
+                _ => {
+                    unreachable!();
+                }
             };
         }
     }

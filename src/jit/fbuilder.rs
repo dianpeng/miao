@@ -43,6 +43,7 @@ struct FBuilder {
 
     // Others
     jit: Jitptr,
+    graph: FGraphptr,
 
     // BBInfoSet, obtained from BBInfoBuilder
     bbinfo_set: BBInfoSet,
@@ -372,7 +373,10 @@ impl FBuilder {
     //      program
     //
     fn check_effect_node(&mut self, x: &Nref) {
-        if x.borrow().has_side_effect() {
+        let has_side_effect = x.borrow().has_side_effect();
+
+        if has_side_effect {
+            let bcid = x.borrow().bcid;
             // add the effect node into current BB's effect list
             {
                 let cur_env = self.cur_env();
@@ -380,7 +384,7 @@ impl FBuilder {
             }
 
             // snapshot the program as deoptimization entry
-            self.add_deopt(x.borrow().bcid);
+            self.add_deopt(bcid);
         }
     }
 
@@ -456,21 +460,19 @@ impl FBuilder {
     // ====================================================================
     // Deoptimization entry
     fn add_deopt(&mut self, bc: u32) {
-        debug_assert!(self.jit.borrow().deopt_table[bc as usize].is_none());
+        debug_assert!(self.graph.borrow().deopt_table[bc as usize].is_none());
         let mut snap = self.mptr().borrow_mut().new_snapshot(bc);
         let env = self.cur_env();
         let mut stk_idx = 0;
         for x in env.borrow().stack.iter() {
             let idx = self.mptr().borrow_mut().new_imm_index(stk_idx, bc);
-            let restore = self.mptr().borrow_mut().new_restore_cell(
-                idx,
-                Nref::clone(x),
-                bc,
-            );
+            let val = Nref::clone(x);
+            let restore =
+                self.mptr().borrow_mut().new_restore_cell(idx, val, bc);
             Node::add_value(&mut snap, restore);
             stk_idx += 1;
         }
-        self.jit.borrow_mut().deopt_table[bc as usize] = Option::Some(snap);
+        self.graph.borrow_mut().deopt_table[bc as usize] = Option::Some(snap);
     }
 
     // ====================================================================
@@ -1197,7 +1199,7 @@ impl FBuilder {
 
     // Prepare phase, ie create all the bb based on the bbinfo_set and then
     // link them together and put correct CFG node type
-    fn build_prepare(&mut self) {
+    fn build_all_bb(&mut self) {
         assert!(self.env_list.len() == 0);
         assert!(self.cur_env.len() == 0);
         assert!(self.env_from_bbinfo_id.len() == 0);
@@ -1247,23 +1249,25 @@ impl FBuilder {
     }
 
     fn build(&mut self) -> bool {
-        // (0) prepare the building, creating all the BB and Env object
-        self.build_prepare();
+        // (0) initialization etc ...
 
-        // (1) perform a Pre-order visit of the BB and perform the bytecode
+        // (1) prepare the building, creating all the BB and Env object
+        self.build_all_bb();
+
+        // (0) perform a Pre-order visit of the BB and perform the bytecode
         //     to IR transformation along with BB linking
         if !self.build_bb() {
             return false;
         }
 
-        // (2) Finalize the graph with special node and linking, notes the
+        // (3) Finalize the graph with special node and linking, notes the
         //     current graph does not have in place deoptimization but the
         //     deoptimization entry is been put into external deoptimization
         //     table.
         {
             let first_bb = Nref::clone(&self.env_list[0].borrow().cfg);
-            let mut start = Nref::clone(&self.jptr().borrow().cfg_start);
-            let end = Nref::clone(&self.jptr().borrow().cfg_end);
+            let mut start = Nref::clone(&self.graph.borrow().cfg_start);
+            let end = Nref::clone(&self.graph.borrow().cfg_end);
 
             // linking the start directly to the first_bb
             Node::add_control(&mut start, first_bb);
@@ -1297,6 +1301,11 @@ impl FBuilder {
             }
         }
 
+        self.jit
+            .borrow_mut()
+            .graph_list
+            .push(FGraphptr::clone(&self.graph));
+
         return true;
     }
 
@@ -1307,11 +1316,17 @@ impl FBuilder {
         jit: Jitptr,
     ) -> FBuilder {
         let bbinfo_set = BBInfoBuilder::build(FuncRef::clone(&fref), acount);
+        let graph = FGraph::new(
+            &mut jit.borrow_mut().mpool,
+            FuncRef::clone(&fref),
+            acount,
+        );
 
         FBuilder {
             function: fref,
             arg_count: acount,
             jit: jit,
+            graph: graph,
             bbinfo_set: bbinfo_set,
             osr: osr,
             env_list: EnvList::new(),
@@ -1371,7 +1386,8 @@ mod fbuilder_tests {
         assert!(FBuilder::build_func(func, 0, Jitptr::clone(&jit)));
 
         // (3) printing into string
-        let graph_string = print_graph(&jit.borrow().cfg_start);
+        let graph_string =
+            print_graph(&jit.borrow().graph_list[0].borrow().cfg_start);
 
         return Option::Some((code_string, graph_string));
     }
@@ -1379,7 +1395,7 @@ mod fbuilder_tests {
     #[test]
     fn basic() {
         match print_code(
-            "let a = 100; if a > 10  return a * 2; else return 100; ",
+            "let a = 100; u = 1;if a > 10  return a * 2; else return 100; ",
         ) {
             Option::Some((a, b)) => {
                 println!("========================================");

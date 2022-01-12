@@ -1,10 +1,10 @@
+use crate::jit::j::*;
+use crate::object::object::*;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::iter;
 use std::rc::Rc;
 use std::rc::Weak;
-use crate::jit::j::*;
-use crate::object::object::*;
 
 pub type JFref = Rc<RefCell<JFunc>>;
 pub type Oref = Rc<Op>;
@@ -76,14 +76,6 @@ pub enum Imm {
 
 pub struct JType;
 
-// Used to represent control flow list, cursorently each node will have at most
-// just 2 control flow dependency, since we connect forward. At most one for
-// false and the other for false.
-pub struct CfgList {
-    lhs: Option<Nref>,
-    rhs: Option<Nref>,
-}
-
 // The graph is orgnized as following, we use a hybrid method of Sea of nodes and
 // classical basic block. For each instruction, if it has a side effect, then
 // it is been placed into the node's effect list, which is only been used by
@@ -103,7 +95,7 @@ pub struct Node {
 
     // -----------------------------------------------------------------------
     // CFG dependency, any-ary, used in situation like normal CFG or Phi nodes
-    pub cfg: CfgList,
+    pub cfg: ValueList,
 
     // -----------------------------------------------------------------------
     // Effect dependency, singleton
@@ -547,118 +539,6 @@ impl Reclaim for Node {
     }
 }
 
-impl CfgList {
-    pub fn new() -> CfgList {
-        CfgList {
-            lhs: Option::None,
-            rhs: Option::None,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        let mut cnt = 0;
-        if let Option::Some(_) = &self.lhs {
-            cnt += 1;
-        }
-        if let Option::Some(_) = &self.rhs {
-            cnt += 1;
-        }
-        return cnt;
-    }
-    pub fn add(&mut self, v: Nref) {
-        if let Option::None = &self.lhs {
-            self.lhs = Option::Some(v);
-            return;
-        }
-        if let Option::None = &self.rhs {
-            self.rhs = Option::Some(v);
-            return;
-        }
-        unreachable!();
-    }
-    pub fn clear(&mut self) {
-        self.lhs = Option::None;
-        self.rhs = Option::None;
-    }
-    pub fn push(&mut self, v: Nref) {
-        self.add(v);
-    }
-
-    pub fn has_false(&self) -> bool {
-        return match &self.lhs {
-            Option::Some(_) => true,
-            _ => false,
-        };
-    }
-    pub fn has_true(&self) -> bool {
-        return match &self.rhs {
-            Option::Some(_) => true,
-            _ => false,
-        };
-    }
-    pub fn set_false(&mut self, v: Nref) {
-        self.lhs = Option::Some(v);
-    }
-    pub fn set_true(&mut self, v: Nref) {
-        self.rhs = Option::Some(v);
-    }
-    pub fn branch_false(&self) -> Option<Nref> {
-        return self.lhs.clone();
-    }
-    pub fn branch_true(&self) -> Option<Nref> {
-        return self.rhs.clone();
-    }
-}
-
-pub struct CfgListIterator<'a> {
-    cursor: u32,
-    l: &'a CfgList,
-}
-
-impl<'a> Iterator for CfgListIterator<'a> {
-    type Item = Nref;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor == 0 {
-            match &self.l.lhs {
-                Option::Some(v) => {
-                    self.cursor += 1;
-                    return Option::Some(Nref::clone(v));
-                }
-                _ => {
-                    self.cursor = 2;
-                    return Option::None;
-                }
-            };
-        }
-        if self.cursor == 1 {
-            match &self.l.rhs {
-                Option::Some(v) => {
-                    self.cursor += 1;
-                    return Option::Some(Nref::clone(v));
-                }
-                _ => {
-                    self.cursor = 2;
-                    return Option::None;
-                }
-            };
-        }
-        return Option::None;
-    }
-}
-
-impl<'a> iter::IntoIterator for &'a CfgList {
-    type Item = Nref;
-    type IntoIter = CfgListIterator<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        return CfgListIterator {
-            cursor: 0,
-            l: &self,
-        };
-    }
-}
-
 impl Node {
     // -----------------------------------------------------------------------
     // Node operator. User needs to use the following APIs to mutate the node
@@ -667,21 +547,26 @@ impl Node {
     pub fn add_value(node: &mut Nref, v: Nref) {
         // (0) adding the def-use into the v
         {
-            let weak_ref = Rc::downgrade(&node);
+            let weak_ref = Rc::downgrade(node);
             v.borrow_mut().def_use.push(DefUse::Value(weak_ref));
         }
 
         // (1) update the value lists
         node.borrow_mut().value.push(v);
+
+        // sanity check against the number of operands added into the nodes
+        if let ParamLimits::Limit(num) = &node.borrow().op.in_size {
+            debug_assert!((*num as usize) >= node.borrow().value.len());
+        }
     }
 
     pub fn add_control(node: &mut Nref, v: Nref) {
         // (0) adding the def-use into the v
         {
-            let weak_ref = Rc::downgrade(&node);
+            let weak_ref = Rc::downgrade(node);
             v.borrow_mut().def_use.push(DefUse::Control(weak_ref));
         }
-        node.borrow_mut().cfg.add(v);
+        node.borrow_mut().cfg.push(v);
     }
 
     pub fn add_effect(node: &mut Nref, v: Nref) {
@@ -689,7 +574,7 @@ impl Node {
 
         // (0) adding the def-use into the v
         {
-            let weak_ref = Rc::downgrade(&node);
+            let weak_ref = Rc::downgrade(node);
             v.borrow_mut().def_use.push(DefUse::Effect(weak_ref));
         }
         node.borrow_mut().effect.push(v);
@@ -710,7 +595,7 @@ impl Node {
         return Nref::new(RefCell::new(Node {
             op: op,
             value: ValueList::new(),
-            cfg: CfgList::new(),
+            cfg: ValueList::new(),
             effect: ValueList::new(),
             def_use: DefUseList::new(),
             imm: Imm::Invalid,
@@ -726,7 +611,7 @@ impl Node {
         return Nref::new(RefCell::new(Node {
             op: op,
             value: ValueList::new(),
-            cfg: CfgList::new(),
+            cfg: ValueList::new(),
             effect: ValueList::new(),
             def_use: DefUseList::new(),
             imm: imm,

@@ -99,7 +99,7 @@ impl Nprinter {
                 wq.push_back(Nref::clone(&xx));
             }
 
-            for xx in front.borrow().cfg.into_iter() {
+            for xx in front.borrow().cfg.iter() {
                 wq.push_back(Nref::clone(&xx));
             }
             for xx in front.borrow().effect.iter() {
@@ -124,7 +124,7 @@ impl Nprinter {
                 buf.push(format!("{} -> {} [color=\"black\"]", &name, &tname));
                 wq.push_back(Nref::clone(&xx));
             }
-            for xx in front.borrow().cfg.into_iter() {
+            for xx in front.borrow().cfg.iter() {
                 let tname = nm(xx.borrow().id);
                 buf.push(format!("{} -> {} [color=\"red\"]", &name, &tname));
                 wq.push_back(Nref::clone(&xx));

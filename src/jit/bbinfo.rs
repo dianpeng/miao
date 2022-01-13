@@ -326,8 +326,20 @@ impl BBInfoBuilder {
         let bc_len = self.function.borrow().proto.code.len() as u32;
 
         while bc_idx < bc_len {
-            let bytecode = self.bc_at(bc_idx);
 
+            // (0) If the bc_idx points to an already existed BB, then just stop
+            //     here, since we should not let the BB overlap with other BB.
+            match &self.out.bc_from_map_bbinfo[bc_idx as usize] {
+                Option::Some(_) => {
+                    debug_assert!(bc_idx - 1 >= pc);
+                    return (bc_idx - 1);
+                }
+                _ => (),
+            };
+
+            // (1) Check the bytecode, if the bytecode is a control flow transfer
+            //     one then, we end up with a BB.
+            let bytecode = self.bc_at(bc_idx);
             match bytecode {
                 Bytecode::JumpFalse(_)
                 | Bytecode::LoopBack(_)
@@ -366,7 +378,17 @@ impl BBInfoBuilder {
             _ => (),
         };
 
-        // (2) check whether jumps into the middle of a existed BB
+        // (2) check whether jumps into the middle of a existed BB or overlapped
+        //     with the existed blocks. 
+        //
+        //     2 situations are needed to be considered :
+        //
+        //     1) the cp points to the middle of an existed block, so this 
+        //        block needs to be splitted
+        //
+        //     2) the cp pointed range includes the existed blocks, this is
+        //        covered by the scan_until_jump which will consider the existed
+        //        BB instead of just bytecodes
         let mut new_range = Option::<(u32, u32, u32)>::None;
         for bb in self.out.bbinfo_list.iter_mut() {
             if bb.bc_from < cp && bb.bc_to >= cp {
@@ -396,9 +418,7 @@ impl BBInfoBuilder {
                     Option::Some(JumpEdge::new_uncond(idx));
 
                 self.out
-                    .bbinfo_list
-                    .last_mut()
-                    .unwrap()
+                    .bbinfo_list[idx as usize]
                     .pred
                     .push(JumpEdge::new_uncond(prev_id));
 
@@ -596,8 +616,20 @@ impl BBInfoBuilder {
                 // future analysis
                 Bytecode::Return(_) | Bytecode::Halt => (),
 
+                // Notes, it is possible to see other situations, ie the natural
+                // jump because of the block is been splitted, if so the last
+                // bytecode is not a control flow instruction
                 _ => {
-                    unreachable!();
+                    let (idx, is_new) = self.add_bbinfo(
+                        last_jump + 1,
+                        Option::Some(JumpEdge::new_uncond(bb_idx)));
+
+                    self.out.bbinfo_list[bb_idx as usize].lhs = 
+                        Option::Some(JumpEdge::new_uncond(idx));
+
+                    // the block must already been existed otherwise
+                    // scan_until_jump will return us a real jump instruction
+                    assert!(!is_new);
                 }
             };
         }

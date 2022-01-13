@@ -3,6 +3,7 @@ use crate::jit::bbinfo::*;
 use crate::jit::j::*;
 use crate::jit::node::*;
 use crate::object::object::*;
+use bitvec::prelude::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -131,7 +132,7 @@ impl FBuilder {
                             [bbinfo_id as usize]
                             .pred[0]
                             .clone();
-                        assert!(!jump_edge.is_loop_back());
+                        debug_assert!(!jump_edge.is_loop_back());
                         jump_edge.bid
                     };
                     // Joining predecessor's block(env)'s stack value, in this
@@ -164,7 +165,6 @@ impl FBuilder {
                         {
                             let mut synth = 0;
                             let prev_env_id = {
-                                println!("JTYPE: {:?} {}", p.jtype, bbinfo_id);
                                 match p.jtype {
                                     JumpType::LoopBack => {
                                         continue;
@@ -1014,7 +1014,6 @@ impl FBuilder {
             // notes, Halt is not written here since it is a control flow
             // indicator, which is taken cared specially
             xx @ _ => {
-                println!("what? {:?}", xx);
                 unreachable!();
             }
         };
@@ -1039,7 +1038,6 @@ impl FBuilder {
         // =====================================================================
         // handle the last bytecode in the BB
         let bytecode = self.bc_at(bc_end);
-        println!("END: {}", bc_end);
         match bytecode {
             Bytecode::JumpFalse(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
@@ -1108,21 +1106,57 @@ impl FBuilder {
             }
             idx += 1;
         }
-        return Option::None;
-    }
+        return Option::None; 
+    } 
 
-    fn verify_all_bb_visited(&self) -> bool {
+    fn verify_all_bb_visited(&self) -> bool { 
         return match self.get_bb_unvisited() {
             Option::Some(_) => false,
             _ => true,
         };
     }
 
-    fn enqueue_bb_child(wqueue: &mut Nidqueue, child: &Option<JumpEdge>) {
+    // Visiting each BB in pre-order. Notes, the pre-order is little bit more
+    // complicated for graph than tree. The reason is the following graph
+    //
+    //  [A]----
+    //   |    |
+    //   |    |
+    //  [B]   |
+    //   |    |
+    //   ----[C]
+    //
+    // The block C's visitation order may be earlier than B since A has a direct
+    // edge link to C. For this case, we need to take extra steps to make sure
+    // that B is always before C.
+    //
+    // To allow the graph visitation to maintain strict pre-order, we do the
+    // following stuff.
+    //
+    //   1. Let q be a Queue
+    //   2. Push first block into the q
+    //   3. while q is not empty
+    //     3.1 check top of the q's preds have been visited or not,
+    //       3.1.1 if not, then push all the pred into the q and then lastly
+    //             push top into the q
+    //       3.1.2 otherwise, visit top and then pop from q
+    //
+    //  Notes, the above iteration will ignore the loop_back edge
+    
+    fn enqueue_bb_child(&self, wqueue: &mut Nidqueue, 
+                        visited: &mut BitVec, child: &Option<JumpEdge>) {
         match child {
             Option::Some(x) => {
                 if x.jtype != JumpType::LoopBack {
-                    wqueue.push_back(x.bid);
+                    // checking pred of x whether they are all visited or not
+                    for p in self.bbinfo_set.bbinfo_list[x.bid as usize].pred.iter() {
+                        if !visited[p.bid as usize] {
+                            wqueue.push_back(p.bid);
+                        }
+                    }
+                    if !visited[x.bid as usize] {
+                        wqueue.push_back(x.bid);
+                    }
                 }
             }
             _ => (),
@@ -1133,11 +1167,49 @@ impl FBuilder {
     // linked and its just its content has not been emitted correctly
     fn build_bb(&mut self) -> bool {
         let mut wqueue = Nidqueue::new();
+        let mut visited = BitVec::new();
+        visited.resize(self.bbinfo_set.bbinfo_list.len(), false);
         wqueue.push_back(0);
 
         // Pre-order visit each BB
         while wqueue.len() != 0 {
+
+            // The following part is kind of tricky. Since we are dealing with
+            // a graph, potentially, a node can be pushed into the queue multiple
+            // times due to following reasons :
+            //   1) Its pred is not visited, so itself cannot be visited
+            //
+            //   2) Its in the queue, but haven't been visited, some other node
+            //      that is been visited can reach this node as successor, so
+            //      the node is not visited yet
+            //
+            // We have one invariants needs to keep, which is a node cannot be
+            // visited if it has pred not been visited. So when we pop the node
+            // out of the queue, we need to make sure that the pred is been
+            // visited, if not, then repush the pred that is not been visited
+            // into the queue along with the node just been poped and rerun the
+            // queue pop logic again to find the node that met the requirements
+            //
+            // Essentially it is just a graph pre-order visiting algorithm
             let cur_idx = wqueue.pop_front().unwrap();
+            if visited[cur_idx as usize] {
+                continue;
+            } else {
+                let mut has_pred_not_visit = false;
+                for p in self.bbinfo_set.bbinfo_list[cur_idx as usize].pred.iter() {
+                    if !visited[p.bid as usize] {
+                        has_pred_not_visit = true;
+                        wqueue.push_back(p.bid);
+                    }
+                }
+                if has_pred_not_visit {
+                    wqueue.push_back(cur_idx);
+                    continue;
+                } else {
+                    *visited.get_mut(cur_idx as usize).unwrap() = true;
+                }
+            }
+
             if !self.build_one_bb(cur_idx) {
                 return false;
             }
@@ -1149,8 +1221,8 @@ impl FBuilder {
                 // visiting order matters -----------------------------------
                 // always visiting lhs first, it is false branch and then the
                 // rhs branch which is the true branch
-                FBuilder::enqueue_bb_child(&mut wqueue, &bb.lhs);
-                FBuilder::enqueue_bb_child(&mut wqueue, &bb.rhs);
+                self.enqueue_bb_child(&mut wqueue, &mut visited, &bb.lhs);
+                self.enqueue_bb_child(&mut wqueue, &mut visited, &bb.rhs);
             }
         }
 
@@ -1204,10 +1276,10 @@ impl FBuilder {
 
     // Prepare phase, ie create all the bb based on the bbinfo_set and then
     // link them together and put correct CFG node type
-    fn build_all_bb(&mut self) {
-        assert!(self.env_list.len() == 0);
-        assert!(self.cur_env.len() == 0);
-        assert!(self.env_from_bbinfo_id.len() == 0);
+    fn setup_all_bb(&mut self) {
+        debug_assert!(self.env_list.len() == 0);
+        debug_assert!(self.cur_env.len() == 0);
+        debug_assert!(self.env_from_bbinfo_id.len() == 0);
 
         let bb_size = self.bbinfo_set.bbinfo_list.len();
 
@@ -1253,18 +1325,16 @@ impl FBuilder {
     }
 
     fn build(&mut self) -> bool {
-        // (0) initialization etc ...
+        // (0) prepare the building, creating all the BB and Env object
+        self.setup_all_bb();
 
-        // (1) prepare the building, creating all the BB and Env object
-        self.build_all_bb();
-
-        // (0) perform a Pre-order visit of the BB and perform the bytecode
+        // (1) perform a Pre-order visit of the BB and perform the bytecode
         //     to IR transformation along with BB linking
         if !self.build_bb() {
             return false;
         }
 
-        // (3) Finalize the graph with special node and linking, notes the
+        // (2) Finalize the graph with special node and linking, notes the
         //     current graph does not have in place deoptimization but the
         //     deoptimization entry is been put into external deoptimization
         //     table.
@@ -1403,7 +1473,19 @@ mod fbuilder_tests {
         match print_code(
             r#"
 let a = 10;
-return (a > 10 ? a + 10 : a - 20) * 2;
+if a > 10 {
+    a = 20;
+} elif (a == 200) {
+    a = 30;
+} elif (a == 40) {
+    a = -10;
+} elif (a == 20) {
+    a -= 20;
+} else {
+    a = 10;
+}
+
+return a + 10;
             "#,
         ) {
             Option::Some((a, b)) => {

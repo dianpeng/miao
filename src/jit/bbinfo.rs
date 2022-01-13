@@ -1,8 +1,9 @@
 use crate::bc::bytecode::*;
 use crate::object::object::*;
 use bitvec::prelude::*;
+use std::collections::VecDeque;
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum JumpType {
     LoopBack,
     CondFalse,
@@ -13,7 +14,7 @@ pub enum JumpType {
     Uncond,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct JumpEdge {
     pub jtype: JumpType,
     pub bid: u32,
@@ -81,6 +82,18 @@ impl JumpEdge {
     fn new_loop_back(id: u32) -> JumpEdge {
         JumpEdge {
             jtype: JumpType::LoopBack,
+            bid: id,
+        }
+    }
+    fn new_and_false(id: u32) -> JumpEdge {
+        JumpEdge {
+            jtype: JumpType::AndFalse,
+            bid: id,
+        }
+    }
+    fn new_or_true(id: u32) -> JumpEdge {
+        JumpEdge {
+            jtype: JumpType::OrTrue,
             bid: id,
         }
     }
@@ -354,15 +367,14 @@ impl BBInfoBuilder {
         };
 
         // (2) check whether jumps into the middle of a existed BB
-        let mut new_range = Option::<(u32, u32)>::None;
+        let mut new_range = Option::<(u32, u32, u32)>::None;
         for bb in self.out.bbinfo_list.iter_mut() {
             if bb.bc_from < cp && bb.bc_to >= cp {
                 // the jump jumps into the middle of an already existed block,
                 // so split the block right at the position of cp
                 let new_end = bb.bc_to;
-                bb.bc_to = cp;
-                new_range = Option::Some((cp, new_end));
-
+                bb.bc_to = cp - 1;
+                new_range = Option::Some((cp, new_end, bb.id));
                 self.out.bc_to_map_bbinfo[cp as usize] = Option::Some(bb.id);
                 break;
             }
@@ -370,13 +382,25 @@ impl BBInfoBuilder {
 
         // (3) if we need to add an extra BB, then do it
         match new_range {
-            Option::Some((start, end)) => {
+            Option::Some((start, end, prev_id)) => {
                 let idx = self.out.bbinfo_list.len() as u32;
                 self.out
                     .bbinfo_list
                     .push(BBInfo::new_range(idx, start, end));
+
                 self.out.bc_from_map_bbinfo[start as usize] = Option::Some(idx);
                 self.out.bc_to_map_bbinfo[end as usize] = Option::Some(idx);
+
+                // link the prev_id to the current BB as direct jump
+                self.out.bbinfo_list[prev_id as usize].lhs =
+                    Option::Some(JumpEdge::new_uncond(idx));
+
+                self.out
+                    .bbinfo_list
+                    .last_mut()
+                    .unwrap()
+                    .pred
+                    .push(JumpEdge::new_uncond(prev_id));
 
                 match pred {
                     Option::Some(je) => {
@@ -415,12 +439,12 @@ impl BBInfoBuilder {
         self.out.bc_to_map_bbinfo.resize(bc_len, Option::None);
 
         // A worker queue keep track of the unfinshed task/job
-        let mut wqueue = Vec::<u32>::new();
+        let mut wqueue = VecDeque::<u32>::new();
         self.add_bbinfo(0, Option::None);
-        wqueue.push(0);
+        wqueue.push_back(0);
 
         while wqueue.len() != 0 {
-            let bb_idx = wqueue.pop().unwrap();
+            let bb_idx = wqueue.pop_front().unwrap();
             bc_idx = self.out.bbinfo_list[bb_idx as usize].bc_from;
 
             let last_jump = self.scan_until_jump(bc_idx + 1);
@@ -439,7 +463,7 @@ impl BBInfoBuilder {
                             Option::Some(JumpEdge::new_false(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].lhs =
                             Option::Some(JumpEdge::new_false(idx));
@@ -453,7 +477,7 @@ impl BBInfoBuilder {
                         );
 
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].rhs =
                             Option::Some(JumpEdge::new_true(idx));
@@ -466,7 +490,7 @@ impl BBInfoBuilder {
                         Option::Some(JumpEdge::new_uncond(bb_idx)),
                     );
                     if is_new {
-                        wqueue.push(idx);
+                        wqueue.push_back(idx);
                     }
                     self.out.bbinfo_list[bb_idx as usize].lhs =
                         Option::Some(JumpEdge::new_uncond(idx));
@@ -478,7 +502,7 @@ impl BBInfoBuilder {
                         Option::Some(JumpEdge::new_loop_back(bb_idx)),
                     );
                     if is_new {
-                        wqueue.push(idx);
+                        wqueue.push_back(idx);
                     }
                     self.out.bbinfo_list[bb_idx as usize].lhs =
                         Option::Some(JumpEdge::new_loop_back(idx));
@@ -492,10 +516,10 @@ impl BBInfoBuilder {
                     {
                         let (idx, is_new) = self.add_bbinfo(
                             cp,
-                            Option::Some(JumpEdge::new_false(bb_idx)),
+                            Option::Some(JumpEdge::new_and_false(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].lhs =
                             Option::Some(JumpEdge::new_false(idx));
@@ -508,7 +532,7 @@ impl BBInfoBuilder {
                             Option::Some(JumpEdge::new_true(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].rhs =
                             Option::Some(JumpEdge::new_true(idx));
@@ -519,10 +543,10 @@ impl BBInfoBuilder {
                     {
                         let (idx, is_new) = self.add_bbinfo(
                             cp,
-                            Option::Some(JumpEdge::new_true(bb_idx)),
+                            Option::Some(JumpEdge::new_or_true(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].rhs =
                             Option::Some(JumpEdge::new_true(idx));
@@ -535,7 +559,7 @@ impl BBInfoBuilder {
                             Option::Some(JumpEdge::new_false(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].lhs =
                             Option::Some(JumpEdge::new_false(idx));
@@ -549,7 +573,7 @@ impl BBInfoBuilder {
                             Option::Some(JumpEdge::new_false(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].lhs =
                             Option::Some(JumpEdge::new_false(idx));
@@ -561,7 +585,7 @@ impl BBInfoBuilder {
                             Option::Some(JumpEdge::new_true(bb_idx)),
                         );
                         if is_new {
-                            wqueue.push(idx);
+                            wqueue.push_back(idx);
                         }
                         self.out.bbinfo_list[bb_idx as usize].rhs =
                             Option::Some(JumpEdge::new_true(idx));

@@ -54,4 +54,8 @@ impl Jit {
             graph_list: Vec::new(),
         }))
     }
+
+    pub fn max_node_id(&self) -> Nid {
+        return self.mpool.borrow().max_node_id();
+    }
 }

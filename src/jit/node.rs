@@ -17,6 +17,7 @@ pub type BBList = Vec<BBref>;
 pub type Mpptr = Rc<RefCell<Mpool>>;
 
 pub type Nqueue = VecDeque<Nref>;
+pub type Nidqueue = VecDeque<Nid>;
 
 pub trait Reclaim {
     // User implementation of is_dead, since we need to somehow to break the
@@ -585,7 +586,7 @@ impl Node {
         debug_assert!(cfg.borrow().is_cfg());
         debug_assert!(value.borrow().is_value());
         Node::add_value(phi, value);
-        Node::add_value(phi, cfg);
+        Node::add_control(phi, cfg);
     }
 
     // -----------------------------------------------------------------------
@@ -1743,6 +1744,11 @@ impl Mpool {
     fn watch_node(&mut self, x: &Nref) {
         let xx = Rc::downgrade(x);
         self.gc_list.push(xx);
+    }
+
+    // maximum mpool node size currently have
+    pub fn max_node_id(&self) -> Nid {
+        return self.node_id;
     }
 
     ///// -------------------------------------------------------------------

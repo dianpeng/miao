@@ -99,7 +99,7 @@ impl FBuilder {
     const SYNTH_OR_TRUE: u32 = 2;
     const SYNTH_NONE: u32 = 0;
 
-    fn enter_env(&mut self, bbinfo_id: u32) {
+    fn enter_env(&mut self, bbinfo_id: u32) -> bool {
         if self.has_cur_env() {
             let env = self.cur_env();
             let bbinfo =
@@ -112,7 +112,9 @@ impl FBuilder {
         let (_, new_env_idx) = {
             let new_env_idx = self.env_from_bbinfo_id[bbinfo_id as usize];
             let new_env = self.env_list[new_env_idx as usize].clone();
-
+            if new_env.borrow().visited {
+                return false;
+            }
             debug_assert!(new_env.borrow().bbinfo_id == bbinfo_id);
 
             // Merging the environment's local stack, ie placing the PHI nodes
@@ -162,6 +164,7 @@ impl FBuilder {
                         {
                             let mut synth = 0;
                             let prev_env_id = {
+                                println!("JTYPE: {:?} {}", p.jtype, bbinfo_id);
                                 match p.jtype {
                                     JumpType::LoopBack => {
                                         continue;
@@ -315,6 +318,8 @@ impl FBuilder {
         // (2) set up the current environment with the duplicated env just
         //     created
         self.cur_env.push(new_env_idx);
+
+        return true;
     }
 
     // Some documentation of loop iv shape ----------------------------------
@@ -1034,6 +1039,7 @@ impl FBuilder {
         // =====================================================================
         // handle the last bytecode in the BB
         let bytecode = self.bc_at(bc_end);
+        println!("END: {}", bc_end);
         match bytecode {
             Bytecode::JumpFalse(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
@@ -1057,17 +1063,22 @@ impl FBuilder {
                 Node::add_value(&mut cfg, self.una());
             }
 
-            // do nothing for unconditional jump
-            Bytecode::Jump(_) | Bytecode::LoopBack(_) => (),
-
             // halt and return instructions
             Bytecode::Halt | Bytecode::Return(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
                 Node::add_value(&mut cfg, self.una());
             }
 
+            // do nothing for unconditional jump
+            Bytecode::Jump(_) | Bytecode::LoopBack(_) => (),
+
+            // natural jump
             _ => {
-                unreachable!();
+                // notes, it means this is a normal instruction and we should
+                // interpret it regardlessly
+                if !self.build_one_bc_in_bb(bytecode, bc_end) {
+                    return false;
+                }
             }
         };
 
@@ -1078,14 +1089,13 @@ impl FBuilder {
     // will create a temporary Env on top of env_list and create the correspond
     // basic block in noder. It will generate the full IR graph in that block
     fn build_one_bb(&mut self, bbinfo_id: u32) -> bool {
-        println!("BBB: {}", bbinfo_id);
-        self.enter_env(bbinfo_id);
-        self.cur_env().borrow_mut().visited = true;
-
-        if !self.build_bc_in_bb() {
-            return false;
+        if self.enter_env(bbinfo_id) {
+            self.cur_env().borrow_mut().visited = true;
+            if !self.build_bc_in_bb() {
+                return false;
+            }
+            self.leave_env();
         }
-        self.leave_env();
         return true;
     }
 
@@ -1108,11 +1118,11 @@ impl FBuilder {
         };
     }
 
-    fn enqueue_bb_child(wqueue: &mut Vec<u32>, child: &Option<JumpEdge>) {
+    fn enqueue_bb_child(wqueue: &mut Nidqueue, child: &Option<JumpEdge>) {
         match child {
             Option::Some(x) => {
                 if x.jtype != JumpType::LoopBack {
-                    wqueue.push(x.bid);
+                    wqueue.push_back(x.bid);
                 }
             }
             _ => (),
@@ -1122,12 +1132,12 @@ impl FBuilder {
     // Trying to build the full basic block. Assume all the BB has already been
     // linked and its just its content has not been emitted correctly
     fn build_bb(&mut self) -> bool {
-        let mut wqueue = Vec::<u32>::new();
-        wqueue.push(0);
+        let mut wqueue = Nidqueue::new();
+        wqueue.push_back(0);
 
         // Pre-order visit each BB
         while wqueue.len() != 0 {
-            let cur_idx = wqueue.pop().unwrap();
+            let cur_idx = wqueue.pop_front().unwrap();
             if !self.build_one_bb(cur_idx) {
                 return false;
             }
@@ -1154,16 +1164,12 @@ impl FBuilder {
             let x = &self.bbinfo_set.bbinfo_list[bbinfo_id as usize];
             (x.bc_from, x.bc_to)
         };
-        println!("CFG: {}", bc_to);
         match self.bc_at(bc_to) {
             Bytecode::Ternary(_)
             | Bytecode::JumpFalse(_)
             | Bytecode::And(_)
             | Bytecode::Or(_) => {
                 return self.mptr().borrow_mut().new_cfg_if_cmp(bc_to);
-            }
-            Bytecode::Jump(_) => {
-                return self.mptr().borrow_mut().new_cfg_jump(bc_to);
             }
             Bytecode::LoopBack(_) => {
                 return self.mptr().borrow_mut().new_cfg_loop_back(bc_to);
@@ -1178,9 +1184,8 @@ impl FBuilder {
                 self.return_list.push(Nref::clone(&x));
                 return x;
             }
-
-            xx @ _ => {
-                unreachable!();
+            _ => {
+                return self.mptr().borrow_mut().new_cfg_jump(bc_to);
             }
         };
     }
@@ -1374,6 +1379,7 @@ mod fbuilder_tests {
         };
 
         let code_string = proto.code.dump();
+        println!("{}", code_string);
 
         // (1) creating the function object, since we don't have any runtime
         //     information, so just doing nothing at all here.
@@ -1384,8 +1390,10 @@ mod fbuilder_tests {
         assert!(FBuilder::build_func(func, 0, Jitptr::clone(&jit)));
 
         // (3) printing into string
-        let graph_string =
-            print_graph(&jit.borrow().graph_list[0].borrow().cfg_start);
+        let graph_string = print_graph(
+            &jit.borrow().graph_list[0].borrow().cfg_start,
+            jit.borrow().max_node_id(),
+        );
 
         return Option::Some((code_string, graph_string));
     }
@@ -1393,7 +1401,10 @@ mod fbuilder_tests {
     #[test]
     fn basic() {
         match print_code(
-            "let a = 100; u = 1;if a > 10  return a * 2; else return 100; ",
+            r#"
+let a = 10;
+return (a > 10 ? a + 10 : a - 20) * 2;
+            "#,
         ) {
             Option::Some((a, b)) => {
                 println!("========================================");

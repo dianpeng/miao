@@ -1,5 +1,6 @@
 // Printing the graph into a dot repersentation. Notes the graph should be
 // linked properly for printing purpose.
+use crate::jit::iter::*;
 use crate::jit::node::*;
 
 // Helper to print each component of the node, notes the output of these are
@@ -16,12 +17,12 @@ fn p_op(x: &Oref, nid: Nid) -> String {
         OpTier::Imm => "hexagon",
         OpTier::Bval => "octagon",
         OpTier::Cfg => "box",
-        OpTier::Rval => "circle",
-        _ => "diamon",
+        OpTier::Rval => "egg",
+        _ => "circle",
     };
 
     let shape_color = match x.tier {
-        OpTier::Imm => "aliceblue",
+        OpTier::Imm => "purple",
         OpTier::Cfg => "cyan",
         OpTier::Snapshot => "cornsilk",
         OpTier::Pseudo => "darkgrey",
@@ -48,6 +49,7 @@ fn nm(nid: Nid) -> String {
 }
 
 struct Nprinter {
+    max_id: Nid,
     start: Nref,
 
     // temporary result
@@ -60,7 +62,7 @@ impl Nprinter {
         let mut tmp = Vec::<String>::new();
 
         // name of the node
-        tmp.push(format!("{} ", nm(x.borrow().id)));
+        tmp.push(format!("  {} ", nm(x.borrow().id)));
 
         // attributes of the node
         tmp.push("[".to_string());
@@ -88,23 +90,8 @@ impl Nprinter {
     // First pass, define the nodes in the graph's
     fn pass_define_node(&mut self) {
         let mut buf = Vec::<String>::new();
-        let mut wq = Nqueue::new();
-        wq.push_front(Nref::clone(&self.start));
-
-        while wq.len() != 0 {
-            let front = wq.pop_front().unwrap();
+        for front in NodeOnceIter::new(&self.start, self.max_id) {
             buf.push(Nprinter::p_node(&front));
-
-            for xx in front.borrow().value.iter() {
-                wq.push_back(Nref::clone(&xx));
-            }
-
-            for xx in front.borrow().cfg.iter() {
-                wq.push_back(Nref::clone(&xx));
-            }
-            for xx in front.borrow().effect.iter() {
-                wq.push_back(Nref::clone(&xx));
-            }
         }
 
         self.node_define_part = buf.join("\n");
@@ -113,26 +100,45 @@ impl Nprinter {
     // Second pass, define nodes's link
     fn pass_define_link(&mut self) {
         let mut buf = Vec::<String>::new();
-        let mut wq = Nqueue::new();
-        wq.push_front(Nref::clone(&self.start));
-
-        while wq.len() != 0 {
-            let front = wq.pop_front().unwrap();
+        for front in NodeOnceIter::new(&self.start, self.max_id) {
             let name = nm(front.borrow().id);
-            for xx in front.borrow().value.iter() {
-                let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=\"black\"]", &name, &tname));
-                wq.push_back(Nref::clone(&xx));
+
+            {
+                let mut idx = 0;
+                for xx in front.borrow().value.iter() {
+                    let tname = nm(xx.borrow().id);
+                    buf.push(format!(
+                        "  {} -> {} [color=\"black\" label=\"value[{}]\"]",
+                        &name, &tname, idx,
+                    ));
+
+                    idx += 1;
+                }
             }
-            for xx in front.borrow().cfg.iter() {
-                let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=\"red\"]", &name, &tname));
-                wq.push_back(Nref::clone(&xx));
+
+            {
+                let mut idx = 0;
+                for xx in front.borrow().cfg.iter() {
+                    let tname = nm(xx.borrow().id);
+                    buf.push(format!(
+                        "  {} -> {} [color=\"blue\" label=\"cfg[{}]\"]",
+                        &name, &tname, idx,
+                    ));
+
+                    idx += 1;
+                }
             }
-            for xx in front.borrow().effect.iter() {
-                let tname = nm(xx.borrow().id);
-                buf.push(format!("{} -> {} [color=\"green\"]", &name, &tname));
-                wq.push_back(Nref::clone(&xx));
+
+            {
+                let mut idx = 0;
+                for xx in front.borrow().effect.iter() {
+                    let tname = nm(xx.borrow().id);
+                    buf.push(format!(
+                        "  {} -> {} [color=\"green\" label=\"effect[{}]\"]",
+                        &name, &tname, idx
+                    ));
+                    idx += 1;
+                }
             }
         }
 
@@ -148,8 +154,9 @@ impl Nprinter {
         );
     }
 
-    fn new(s: Nref) -> Nprinter {
+    fn new(s: Nref, mid: Nid) -> Nprinter {
         Nprinter {
+            max_id: mid,
             start: s,
             node_define_part: "".to_string(),
             node_link_part: "".to_string(),
@@ -157,8 +164,8 @@ impl Nprinter {
     }
 }
 
-pub fn print_graph(x: &Nref) -> String {
+pub fn print_graph(x: &Nref, max_id: Nid) -> String {
     assert!(x.borrow().is_cfg_start());
-    let mut printer = Nprinter::new(Nref::clone(x));
+    let mut printer = Nprinter::new(Nref::clone(x), max_id);
     return printer.print();
 }

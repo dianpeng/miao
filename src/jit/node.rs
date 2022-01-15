@@ -81,6 +81,13 @@ pub enum Imm {
 
 pub struct JType;
 
+// Bytecode context, used to record the bytecode related information, ie for
+// generating the deoptimize stub etc ...
+pub struct BcCtx {
+    pub bc: u32,
+    pub frame: u32,
+}
+
 // The graph is orgnized as following, we use a hybrid method of Sea of nodes and
 // classical basic block. For each instruction, if it has a side effect, then
 // it is been placed into the node's effect list, which is only been used by
@@ -120,7 +127,7 @@ pub struct Node {
     // the life simpler, we just place the immediate number directly at the
     // node here. The immediate does not account for input arguments etc ...
     pub id: Nid,
-    pub bcid: u32,
+    pub bc: BcCtx,
 
     // -----------------------------------------------------------------------
     // Other information
@@ -553,6 +560,16 @@ impl Reclaim for Node {
     }
 }
 
+impl BcCtx {
+    pub fn new(bc: u32, fr: u32) -> BcCtx {
+        BcCtx { bc: bc, frame: fr }
+    }
+
+    pub fn new_main(bc: u32) -> BcCtx {
+        BcCtx::new(bc, 0)
+    }
+}
+
 impl Node {
     // -----------------------------------------------------------------------
     // Node operator. User needs to use the following APIs to mutate the node
@@ -833,7 +850,7 @@ impl Node {
     // -----------------------------------------------------------------------
     // Factory Method
     // -----------------------------------------------------------------------
-    fn new(op: Oref, id: Nid, bcid: u32) -> Nref {
+    fn new(op: Oref, id: Nid, bcid: BcCtx) -> Nref {
         return Nref::new(RefCell::new(Node {
             op: op,
             value: ValueList::new(),
@@ -842,14 +859,14 @@ impl Node {
             def_use: DefUseList::new(),
             imm: Imm::Invalid,
             id: id,
-            bcid: bcid,
+            bc: bcid,
             alias: Option::None,
             jtype: Option::None,
             dead: false,
         }));
     }
 
-    fn new_imm(op: Oref, id: Nid, bcid: u32, imm: Imm) -> Nref {
+    fn new_imm(op: Oref, id: Nid, bcid: BcCtx, imm: Imm) -> Nref {
         return Nref::new(RefCell::new(Node {
             op: op,
             value: ValueList::new(),
@@ -858,20 +875,20 @@ impl Node {
             def_use: DefUseList::new(),
             imm: imm,
             id: id,
-            bcid: bcid,
+            bc: bcid,
             alias: Option::None,
             jtype: Option::None,
             dead: false,
         }));
     }
 
-    fn new_unary(op: Oref, id: Nid, bcid: u32, v0: Nref) -> Nref {
+    fn new_unary(op: Oref, id: Nid, bcid: BcCtx, v0: Nref) -> Nref {
         let mut n = Node::new(op, id, bcid);
         Node::add_value(&mut n, v0);
         return n;
     }
 
-    fn new_binary(op: Oref, id: Nid, bcid: u32, lhs: Nref, rhs: Nref) -> Nref {
+    fn new_binary(op: Oref, id: Nid, bcid: BcCtx, lhs: Nref, rhs: Nref) -> Nref {
         let mut n = Node::new(op, id, bcid);
         Node::add_value(&mut n, lhs);
         Node::add_value(&mut n, rhs);
@@ -881,7 +898,7 @@ impl Node {
     fn new_ternary(
         op: Oref,
         id: Nid,
-        bcid: u32,
+        bcid: BcCtx,
         v0: Nref,
         v1: Nref,
         v2: Nref,
@@ -938,10 +955,11 @@ impl Node {
 
     pub fn print(&self) -> String {
         return format!(
-            "{:?}[{}][{}]({:?}) => {}:{}:{}",
+            "{:?}[{}][{}.{}]({:?}) => {}:{}:{}",
             self.op.op,
             self.id,
-            self.bcid,
+            self.bc.frame,
+            self.bc.bc,
             self.imm,
             self.value.len(),
             self.cfg.len(),
@@ -2048,7 +2066,7 @@ impl Mpool {
     ///// -------------------------------------------------------------------
     ///// Factory method for Nref(node)
     ///// -------------------------------------------------------------------
-    pub fn new_imm_index(&mut self, index: u32, bcpos: u32) -> Nref {
+    pub fn new_imm_index(&mut self, index: u32, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_index),
             self.node_next_id(),
@@ -2058,7 +2076,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_u32(&mut self, v: u32, bcpos: u32) -> Nref {
+    pub fn new_imm_u32(&mut self, v: u32, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_u32),
             self.node_next_id(),
@@ -2068,7 +2086,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_u16(&mut self, v: u16, bcpos: u32) -> Nref {
+    pub fn new_imm_u16(&mut self, v: u16, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_u16),
             self.node_next_id(),
@@ -2078,7 +2096,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_u8(&mut self, v: u8, bcpos: u32) -> Nref {
+    pub fn new_imm_u8(&mut self, v: u8, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_u8),
             self.node_next_id(),
@@ -2088,7 +2106,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_i64(&mut self, v: i64, bcpos: u32) -> Nref {
+    pub fn new_imm_i64(&mut self, v: i64, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_i64),
             self.node_next_id(),
@@ -2098,7 +2116,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_i32(&mut self, v: i32, bcpos: u32) -> Nref {
+    pub fn new_imm_i32(&mut self, v: i32, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_i32),
             self.node_next_id(),
@@ -2108,7 +2126,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_i16(&mut self, v: i16, bcpos: u32) -> Nref {
+    pub fn new_imm_i16(&mut self, v: i16, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_i16),
             self.node_next_id(),
@@ -2118,7 +2136,7 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
-    pub fn new_imm_i8(&mut self, v: i8, bcpos: u32) -> Nref {
+    pub fn new_imm_i8(&mut self, v: i8, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_i8),
             self.node_next_id(),
@@ -2129,7 +2147,12 @@ impl Mpool {
         return x;
     }
 
-    pub fn new_rv_node_unary(&mut self, op: Oref, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_node_unary(
+        &mut self,
+        op: Oref,
+        v: Nref,
+        bcpos: BcCtx,
+    ) -> Nref {
         let x = Node::new_unary(op, self.node_next_id(), bcpos, v);
         self.watch_node(&x);
         return x;
@@ -2140,14 +2163,14 @@ impl Mpool {
         op: Oref,
         lhs: Nref,
         rhs: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let x = Node::new_binary(op, self.node_next_id(), bcpos, lhs, rhs);
         self.watch_node(&x);
         return x;
     }
 
-    pub fn new_rv_add(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_add(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_add),
             lhs,
@@ -2156,7 +2179,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_sub(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_sub(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_sub),
             lhs,
@@ -2165,7 +2188,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_mul(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_mul(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_mul),
             lhs,
@@ -2174,7 +2197,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_div(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_div(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_div),
             lhs,
@@ -2183,7 +2206,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_mod(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_mod(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_mod),
             lhs,
@@ -2192,7 +2215,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_pow(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_pow(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_pow),
             lhs,
@@ -2201,7 +2224,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_eq(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_eq(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_eq),
             lhs,
@@ -2210,7 +2233,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_ne(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_ne(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_ne),
             lhs,
@@ -2219,7 +2242,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_le(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_le(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_le),
             lhs,
@@ -2228,7 +2251,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_lt(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_lt(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_lt),
             lhs,
@@ -2237,7 +2260,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_ge(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_ge(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_ge),
             lhs,
@@ -2246,7 +2269,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_gt(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_gt(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_gt),
             lhs,
@@ -2255,7 +2278,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_and(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_and(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_and),
             lhs,
@@ -2264,7 +2287,7 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_or(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_or(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_or),
             lhs,
@@ -2273,7 +2296,12 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_con_str(&mut self, lhs: Nref, rhs: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_con_str(
+        &mut self,
+        lhs: Nref,
+        rhs: Nref,
+        bcpos: BcCtx,
+    ) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_con_str),
             lhs,
@@ -2282,70 +2310,70 @@ impl Mpool {
         );
     }
 
-    pub fn new_rv_not(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_not(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_unary(Oref::clone(&self.op_rv_not), v, bcpos);
     }
-    pub fn new_rv_neg(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_neg(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_unary(Oref::clone(&self.op_rv_neg), v, bcpos);
     }
-    pub fn new_rv_to_string(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_to_string(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_unary(
             Oref::clone(&self.op_rv_to_string),
             v,
             bcpos,
         );
     }
-    pub fn new_rv_to_boolean(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_to_boolean(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_unary(
             Oref::clone(&self.op_rv_to_boolean),
             v,
             bcpos,
         );
     }
-    fn new_rv_load(&mut self, op: Oref, idx: Nref, bcid: u32) -> Nref {
+    fn new_rv_load(&mut self, op: Oref, idx: Nref, bcid: BcCtx) -> Nref {
         let mut node = Node::new(op, self.node_next_id(), bcid);
         Node::add_value(&mut node, idx);
         self.watch_node(&node);
         return node;
     }
-    fn new_rv_load_none(&mut self, op: Oref, bcid: u32) -> Nref {
+    fn new_rv_load_none(&mut self, op: Oref, bcid: BcCtx) -> Nref {
         let node = Node::new(op, self.node_next_id(), bcid);
         self.watch_node(&node);
         return node;
     }
 
-    pub fn new_rv_load_int(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_int(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_load(Oref::clone(&self.op_rv_load_int), v, bcpos);
     }
 
-    pub fn new_rv_load_real(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_real(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_load(Oref::clone(&self.op_rv_load_real), v, bcpos);
     }
 
-    pub fn new_rv_load_string(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_string(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_load(Oref::clone(&self.op_rv_load_string), v, bcpos);
     }
 
-    pub fn new_rv_load_function(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_function(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_load(Oref::clone(&self.op_rv_load_string), v, bcpos);
     }
 
-    pub fn new_rv_load_null(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_load_null(&mut self, bcpos: BcCtx) -> Nref {
         return self.new_rv_load_none(Oref::clone(&self.op_rv_load_null), bcpos);
     }
 
-    pub fn new_rv_load_true(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_load_true(&mut self, bcpos: BcCtx) -> Nref {
         return self.new_rv_load_none(Oref::clone(&self.op_rv_load_true), bcpos);
     }
 
-    pub fn new_rv_load_false(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_load_false(&mut self, bcpos: BcCtx) -> Nref {
         return self
             .new_rv_load_none(Oref::clone(&self.op_rv_load_false), bcpos);
     }
 
     // -------------------------------------------------------------------------
     // list creation
-    pub fn new_rv_list_create(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_list_create(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_list_create),
             self.node_next_id(),
@@ -2355,7 +2383,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_list_add(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_list_add(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_list_add),
             self.node_next_id(),
@@ -2367,7 +2395,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // object creation
-    pub fn new_rv_object_create(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_object_create(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_object_create),
             self.node_next_id(),
@@ -2377,7 +2405,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_object_add(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_object_add(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_object_add),
             self.node_next_id(),
@@ -2389,7 +2417,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // iterators
-    pub fn new_rv_iterator_new(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_iterator_new(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_iterator_new),
             self.node_next_id(),
@@ -2399,7 +2427,7 @@ impl Mpool {
         self.watch_node(&n);
         return n;
     }
-    pub fn new_rv_iterator_has(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_iterator_has(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_iterator_has),
             self.node_next_id(),
@@ -2409,7 +2437,7 @@ impl Mpool {
         self.watch_node(&n);
         return n;
     }
-    pub fn new_rv_iterator_next(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_iterator_next(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_iterator_next),
             self.node_next_id(),
@@ -2419,7 +2447,7 @@ impl Mpool {
         self.watch_node(&n);
         return n;
     }
-    pub fn new_rv_iterator_value(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_iterator_value(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_iterator_value),
             self.node_next_id(),
@@ -2432,7 +2460,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Globals
-    pub fn new_rv_load_global(&mut self, idx: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_global(&mut self, idx: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_load_global),
             self.node_next_id(),
@@ -2446,7 +2474,7 @@ impl Mpool {
         &mut self,
         idx: Nref,
         value: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_set_global),
@@ -2461,7 +2489,12 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Memory
-    pub fn new_dot_access(&mut self, recv: Nref, idx: Nref, bcpos: u32) -> Nref {
+    pub fn new_dot_access(
+        &mut self,
+        recv: Nref,
+        idx: Nref,
+        bcpos: BcCtx,
+    ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_mem_dot_load),
             self.node_next_id(),
@@ -2477,7 +2510,7 @@ impl Mpool {
         recv: Nref,
         idx: Nref,
         val: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_mem_dot_store),
@@ -2491,7 +2524,12 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_index_load(&mut self, recv: Nref, idx: Nref, bcpos: u32) -> Nref {
+    pub fn new_index_load(
+        &mut self,
+        recv: Nref,
+        idx: Nref,
+        bcpos: BcCtx,
+    ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_mem_index_load),
             self.node_next_id(),
@@ -2507,7 +2545,7 @@ impl Mpool {
         recv: Nref,
         idx: Nref,
         val: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_mem_index_store),
@@ -2523,7 +2561,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Upvalue
-    pub fn new_rv_load_upvalue(&mut self, index: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_load_upvalue(&mut self, index: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_load_upvalue),
             self.node_next_id(),
@@ -2537,7 +2575,7 @@ impl Mpool {
         &mut self,
         index: Nref,
         value: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_set_upvalue),
@@ -2552,7 +2590,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Builtin
-    pub fn new_rv_assert1(&mut self, cond: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_assert1(&mut self, cond: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_assert1),
             self.node_next_id(),
@@ -2562,7 +2600,12 @@ impl Mpool {
         self.watch_node(&n);
         return n;
     }
-    pub fn new_rv_assert2(&mut self, cond: Nref, msg: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_assert2(
+        &mut self,
+        cond: Nref,
+        msg: Nref,
+        bcpos: BcCtx,
+    ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_assert2),
             self.node_next_id(),
@@ -2574,7 +2617,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_typeof(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_typeof(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_typeof),
             self.node_next_id(),
@@ -2585,7 +2628,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_sizeof(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_sizeof(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_sizeof),
             self.node_next_id(),
@@ -2596,7 +2639,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_trace(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_trace(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_trace),
             self.node_next_id(),
@@ -2606,7 +2649,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_halt(&mut self, v: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_halt(&mut self, v: Nref, bcpos: BcCtx) -> Nref {
         let mut n =
             Node::new(Oref::clone(&self.op_rv_halt), self.node_next_id(), bcpos);
         Node::add_value(&mut n, v);
@@ -2614,7 +2657,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_param(&mut self, idx: Nref, bcpos: u32) -> Nref {
+    pub fn new_rv_param(&mut self, idx: Nref, bcpos: BcCtx) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_rv_param),
             self.node_next_id(),
@@ -2627,7 +2670,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Phi
-    pub fn new_rv_phi(&mut self, bcpos: u32) -> Nref {
+    pub fn new_rv_phi(&mut self, bcpos: BcCtx) -> Nref {
         let n =
             Node::new(Oref::clone(&self.op_rv_phi), self.node_next_id(), bcpos);
         self.watch_node(&n);
@@ -2636,7 +2679,7 @@ impl Mpool {
 
     // -------------------------------------------------------------------------
     // Pseudo
-    pub fn new_placeholder(&mut self, bcpos: u32) -> Nref {
+    pub fn new_placeholder(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_placeholder),
             self.node_next_id(),
@@ -2646,7 +2689,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_loop_iv_placeholder(&mut self, bcpos: u32) -> Nref {
+    pub fn new_loop_iv_placeholder(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_loop_iv_placeholder),
             self.node_next_id(),
@@ -2662,7 +2705,7 @@ impl Mpool {
         &mut self,
         idx: Nref,
         val: Nref,
-        bcpos: u32,
+        bcpos: BcCtx,
     ) -> Nref {
         let mut n = Node::new(
             Oref::clone(&self.op_restore_cell),
@@ -2674,7 +2717,7 @@ impl Mpool {
         self.watch_node(&n);
         return n;
     }
-    pub fn new_snapshot(&mut self, bcpos: u32) -> Nref {
+    pub fn new_snapshot(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_snapshot),
             self.node_next_id(),
@@ -2689,20 +2732,24 @@ impl Mpool {
     //                          Control Flow Graph
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
-    pub fn new_cfg_start(&mut self) -> Nref {
+    pub fn new_cfg_start(&mut self, bcid: BcCtx) -> Nref {
+        let n = Node::new(
+            Oref::clone(&self.op_cfg_start),
+            self.node_next_id(),
+            bcid,
+        );
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_cfg_end(&mut self, bcid: BcCtx) -> Nref {
         let n =
-            Node::new(Oref::clone(&self.op_cfg_start), self.node_next_id(), 0);
+            Node::new(Oref::clone(&self.op_cfg_end), self.node_next_id(), bcid);
         self.watch_node(&n);
         return n;
     }
 
-    pub fn new_cfg_end(&mut self) -> Nref {
-        let n = Node::new(Oref::clone(&self.op_cfg_end), self.node_next_id(), 0);
-        self.watch_node(&n);
-        return n;
-    }
-
-    pub fn new_cfg_merge_return(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_merge_return(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_merge_return),
             self.node_next_id(),
@@ -2712,7 +2759,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_merge_halt(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_merge_halt(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_merge_halt),
             self.node_next_id(),
@@ -2722,7 +2769,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_halt(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_halt(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_halt),
             self.node_next_id(),
@@ -2732,7 +2779,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_return(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_return(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_return),
             self.node_next_id(),
@@ -2742,7 +2789,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_if_cmp(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_if_cmp(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_if_cmp),
             self.node_next_id(),
@@ -2752,7 +2799,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_jump(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_jump(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_jump),
             self.node_next_id(),
@@ -2762,7 +2809,7 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_cfg_loop_back(&mut self, bcpos: u32) -> Nref {
+    pub fn new_cfg_loop_back(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_cfg_loop_back),
             self.node_next_id(),

@@ -30,9 +30,14 @@ pub struct Jit {
 }
 
 impl FGraph {
-    pub fn new(m: &mut Mpptr, fref: FuncRef, arg_count: u32) -> FGraphptr {
-        let start = m.borrow_mut().new_cfg_start();
-        let end = m.borrow_mut().new_cfg_end();
+    pub fn new(
+        m: &mut Mpptr,
+        fref: FuncRef,
+        arg_count: u32,
+        frame: u32,
+    ) -> FGraphptr {
+        let start = m.borrow_mut().new_cfg_start(BcCtx::new(0, frame));
+        let end = m.borrow_mut().new_cfg_end(BcCtx::new(0, frame));
         let code_size = fref.borrow().proto.code.array.len();
         let deopt_table = vec![Option::None; code_size];
 

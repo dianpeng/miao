@@ -76,8 +76,12 @@ impl Nprinter {
         // (1) id
         tmp.push(format!(" id={}", x.borrow().id));
 
-        // (2) bcid
-        tmp.push(format!(" bcid={}", x.borrow().bcid));
+        // (2) bc
+        tmp.push(format!(
+            " bc={} frame={}",
+            x.borrow().bc.bc,
+            x.borrow().bc.frame
+        ));
 
         // (3) dead
         tmp.push(format!(" dead={}", x.borrow().dead));

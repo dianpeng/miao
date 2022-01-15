@@ -52,11 +52,15 @@ pub struct Alias {
 // Denote as the input list, ie representing the value dependency
 pub type ValueList = Vec<Nref>;
 
+fn find_val(x: &ValueList, y: &Nref) -> Option<usize> {
+    x.iter().position(|x| Nref::ptr_eq(x, y))
+}
+
+#[derive(Clone)]
 pub enum DefUse {
     Value(WkNref),
     Control(WkNref),
     Effect(WkNref),
-    Invalid,
 }
 
 pub type DefUseList = Vec<DefUse>;
@@ -129,10 +133,11 @@ pub struct Node {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum OpTier {
-    Imm,      // immediate numbers, ie constant
-    Cfg,      // control flow node
-    Snapshot, // Checkpoint
-    Pseudo,   // man made node, ie DeoptEntry etc ..., they will be materialized
+    Imm,         // immediate numbers, ie constant
+    Placeholder, // dummy entry
+    Cfg,         // control flow node
+    Snapshot,    // Checkpoint
+    Pseudo, // man made node, ie DeoptEntry etc ..., they will be materialized
     // back to lower structure or been removed entirely
     Phi,
     Bval, // box/unbox operations, we will have special phase to lower them
@@ -147,6 +152,9 @@ pub enum Opcode {
 
     // placeholder node, used to mark that the value is not materialized yet
     Placeholder,
+
+    // used as a placeholder for building loop IV
+    LoopIVPlaceholder,
 
     // Snapshot usage
     Snapshot,
@@ -206,6 +214,9 @@ pub enum Opcode {
 
     // Rv phis , high level PHIS, ie marshal 2 boxed value,
     RvPhi,
+
+    // Represent the function input arguments,
+    RvParam,
 
     // Rust value arithmetic value, both sides must be a boxed value,
     RvAdd,
@@ -410,8 +421,9 @@ pub struct Mpool {
     op_unbox_false: Oref,
     op_unbox_null: Oref,
 
-    // (((((((((((((((((((((( PESUDO ))))))))))))))))))))))
+    // (((((((((((((((((((((( PLACEHOLDER ))))))))))))))))))))))
     op_placeholder: Oref,
+    op_loop_iv_placeholder: Oref,
 
     // (((((((((((((((((((((( SNAPSHOT ))))))))))))))))))))))
     op_snapshot: Oref,
@@ -482,6 +494,7 @@ pub struct Mpool {
 
     // Phi
     op_rv_phi: Oref,
+    op_rv_param: Oref,
 
     // -------------------------------------------------------------------------
     // (((((((((((((((((((((( CFG node ))))))))))))))))))))))
@@ -583,10 +596,238 @@ impl Node {
 
     pub fn add_phi_value(phi: &mut Nref, value: Nref, cfg: Nref) {
         debug_assert!(phi.borrow().is_phi());
-        debug_assert!(cfg.borrow().is_cfg());
         debug_assert!(value.borrow().is_value());
+        debug_assert!(cfg.borrow().is_cfg());
+
         Node::add_value(phi, value);
         Node::add_control(phi, cfg);
+    }
+
+    fn remove_def_use(x: &mut Nref, what: DefUse) -> bool {
+        let wk = match what {
+            DefUse::Effect(a) | DefUse::Control(a) | DefUse::Value(a) => a,
+        };
+        let index = match x.borrow_mut().def_use.iter().position(|x| {
+            match x {
+                DefUse::Effect(a) | DefUse::Control(a) | DefUse::Value(a) => {
+                    return Weak::ptr_eq(a, &wk);
+                }
+            };
+        }) {
+            Option::Some(index) => index,
+            _ => return false,
+        };
+        x.borrow_mut().def_use.remove(index);
+        return true;
+    }
+
+    pub fn find_use_idx(x: &Nref, y: &Nref) -> Option<usize> {
+        let wy = Rc::downgrade(y);
+        let mut idx = 0;
+        for u in x.borrow().def_use.iter() {
+            match u {
+                DefUse::Effect(a) | DefUse::Control(a) | DefUse::Value(a) => {
+                    if Weak::ptr_eq(a, &wy) {
+                        return Option::Some(idx);
+                    }
+                }
+            };
+            idx += 1;
+        }
+        return Option::None;
+    }
+
+    pub fn find_use(x: &Nref, y: &Nref) -> Option<DefUse> {
+        return Option::Some(
+            x.borrow().def_use[Node::find_use_idx(x, y)?].clone(),
+        );
+    }
+
+    pub fn has_use(x: &Nref, y: &Nref) -> bool {
+        return Node::find_use(x, y).is_some();
+    }
+
+    pub fn remove_value(x: &mut Nref, i: usize) {
+        let vv = DefUse::Value(Nref::downgrade(&x.borrow().value[i]));
+        Node::remove_def_use(x, vv);
+
+        x.borrow_mut().value.remove(i);
+    }
+
+    pub fn remove_control(x: &mut Nref, i: usize) {
+        let vv = DefUse::Control(Nref::downgrade(&x.borrow().cfg[i]));
+        Node::remove_def_use(x, vv);
+
+        x.borrow_mut().cfg.remove(i);
+    }
+
+    pub fn remove_effect(x: &mut Nref, i: usize) {
+        let vv = DefUse::Control(Nref::downgrade(&x.borrow().effect[i]));
+        Node::remove_def_use(x, vv);
+
+        x.borrow_mut().effect.remove(i);
+    }
+
+    pub fn remove_value_node(x: &mut Nref, v: &Nref) {
+        let idx = match x.borrow().value.iter().position(|l| Nref::ptr_eq(l, v))
+        {
+            Option::Some(idx) => idx,
+            _ => return,
+        };
+        Node::remove_value(x, idx);
+    }
+
+    pub fn remove_control_node(x: &mut Nref, v: &Nref) {
+        let idx = match x.borrow().cfg.iter().position(|l| Nref::ptr_eq(l, v)) {
+            Option::Some(idx) => idx,
+            _ => return,
+        };
+        Node::remove_control(x, idx);
+    }
+
+    pub fn remove_effect_node(x: &mut Nref, v: &Nref) {
+        let idx = match x.borrow().effect.iter().position(|l| Nref::ptr_eq(l, v))
+        {
+            Option::Some(idx) => idx,
+            _ => return,
+        };
+        Node::remove_effect(x, idx);
+    }
+
+    // If Y is been used by X, then we remove Y from X's usage list.
+    pub fn remove_use(x: &mut Nref, y: &Nref) -> bool {
+        let r = Node::find_use(y, x);
+        if r.is_none() {
+            return false;
+        }
+        match r.unwrap() {
+            DefUse::Effect(_) => {
+                Node::remove_effect_node(x, y);
+                return true;
+            }
+            DefUse::Value(_) => {
+                Node::remove_value_node(x, y);
+                return true;
+            }
+            DefUse::Control(_) => {
+                Node::remove_control_node(x, y);
+                return true;
+            }
+        };
+    }
+
+    // remove all the use of node x. Notes, this doesn't impact x's own value
+    pub fn remove_all_use(x: &mut Nref) {
+        for u in x.borrow().def_use.iter() {
+            match u {
+                DefUse::Effect(ptr) => {
+                    if let Option::Some(mut tar) = ptr.upgrade() {
+                        Node::remove_effect_node(&mut tar, x);
+                    }
+                }
+                DefUse::Value(ptr) => {
+                    if let Option::Some(mut tar) = ptr.upgrade() {
+                        Node::remove_value_node(&mut tar, x);
+                    }
+                }
+                DefUse::Control(ptr) => {
+                    if let Option::Some(mut tar) = ptr.upgrade() {
+                        Node::remove_control_node(&mut tar, x);
+                    }
+                }
+            };
+        }
+
+        x.borrow_mut().def_use.clear();
+    }
+
+    // Replace cur's all usage into tar
+    pub fn replace(cur: &mut Nref, tar: Nref) {
+        let dup_def_use = cur.borrow().def_use.clone();
+
+        // remove all use that uses cur
+        Node::remove_all_use(cur);
+
+        // replay all the cur's use with tar
+        for u in dup_def_use.iter() {
+            match u {
+                DefUse::Effect(ptr) => {
+                    if let Option::Some(mut recv) = ptr.upgrade() {
+                        Node::add_effect(&mut recv, Nref::clone(&tar));
+                    }
+                }
+
+                DefUse::Value(ptr) => {
+                    if let Option::Some(mut recv) = ptr.upgrade() {
+                        Node::add_value(&mut recv, Nref::clone(&tar));
+                    }
+                }
+
+                DefUse::Control(ptr) => {
+                    if let Option::Some(mut recv) = ptr.upgrade() {
+                        Node::add_control(&mut recv, Nref::clone(&tar));
+                    }
+                }
+            };
+        }
+    }
+
+    pub fn remove_phi_value(x: &mut Nref, i: usize) {
+        debug_assert!(x.borrow().is_phi());
+        Node::remove_value(x, i);
+        Node::remove_control(x, i);
+    }
+
+    // Replace placeholder node in the value dependency list
+    pub fn replace_placeholder_value(x: &mut Nref, value: Nref) -> usize {
+        let mut i = 0;
+        for mut v in x.borrow_mut().value.iter_mut() {
+            if v.borrow().is_placeholder() {
+                assert!(Node::remove_def_use(
+                    &mut v,
+                    DefUse::Value(Nref::downgrade(&Nref::clone(x)))
+                ));
+                *v = Nref::clone(&value);
+
+                i += 1;
+            }
+        }
+        return i;
+    }
+
+    pub fn simplify_phi(x: &mut Nref) {
+        debug_assert!(x.borrow().is_phi());
+
+        // (0) check wether the phi has placeholder, if so just remove the
+        //     placeholder
+        {
+            let len = x.borrow().value.len();
+            let mut i = 0;
+            let mut death_list = Vec::<usize>::new();
+
+            while i < len {
+                if x.borrow_mut().value[i].borrow().is_placeholder() {
+                    death_list.push(i);
+                }
+                i += 1;
+            }
+
+            // notes, every removal of value will shrink the position of each
+            // value component
+            let mut offset = 0;
+            for v in death_list.iter() {
+                Node::remove_phi_value(x, *v - offset);
+                offset += 1;
+            }
+        }
+
+        // (1) If the current node has become singleton, then just make the
+        //     phi to be replaced by its value
+        if x.borrow().value.len() == 1 {
+            debug_assert!(x.borrow().cfg.len() == 1);
+            let v = x.borrow().value[0].clone();
+            Node::replace(x, v);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -681,6 +922,32 @@ impl Node {
     pub fn is_cfg_end(&self) -> bool {
         return self.op.op == Opcode::CfgEnd;
     }
+    pub fn is_placeholder(&self) -> bool {
+        return self.op.tier == OpTier::Placeholder;
+    }
+
+    // loop iv placeholder can only be inserted into the value slot
+    pub fn has_loop_iv_placeholder(&self) -> bool {
+        for x in self.value.iter() {
+            if x.borrow().op.op == Opcode::LoopIVPlaceholder {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn print(&self) -> String {
+        return format!(
+            "{:?}[{}][{}]({:?}) => {}:{}:{}",
+            self.op.op,
+            self.id,
+            self.bcid,
+            self.imm,
+            self.value.len(),
+            self.cfg.len(),
+            self.effect.len()
+        );
+    }
 }
 
 impl Op {
@@ -699,7 +966,8 @@ impl Op {
             || x.tier == OpTier::Rval
             || x.tier == OpTier::Mid
             || x.tier == OpTier::Arch
-            || x.tier == OpTier::Imm;
+            || x.tier == OpTier::Imm
+            || x.tier == OpTier::Placeholder;
     }
 
     // factory method categories ----------------------------------------------
@@ -1071,13 +1339,25 @@ impl Op {
         ))
     }
     // =============================================================
-    // (((Pseudo)))
+    // (((Placeholder)))
     // =============================================================
     fn placeholder() -> Oref {
         Oref::new(Op::new(
             "placeholder",
-            OpTier::Pseudo,
+            OpTier::Placeholder,
             Opcode::Placeholder,
+            false,
+            false,
+            ParamLimits::Any,
+            MachineFlag {},
+        ))
+    }
+
+    fn loop_iv_placeholder() -> Oref {
+        Oref::new(Op::new(
+            "loop_iv_placeholder",
+            OpTier::Placeholder,
+            Opcode::LoopIVPlaceholder,
             false,
             false,
             ParamLimits::Any,
@@ -1419,6 +1699,18 @@ impl Op {
         ))
     }
 
+    fn rv_param() -> Oref {
+        Oref::new(Op::new(
+            "rv_param",
+            OpTier::Rval,
+            Opcode::RvParam,
+            false,
+            false,
+            ParamLimits::Limit(1),
+            MachineFlag {},
+        ))
+    }
+
     // Builtins, the builtin will be lowered into the corresponding intrinsic
     // during builtin lower phase.
     fn rv_assert1() -> Oref {
@@ -1651,6 +1943,7 @@ impl Mpool {
 
             // Pesudo nodes
             op_placeholder: Op::placeholder(),
+            op_loop_iv_placeholder: Op::loop_iv_placeholder(),
 
             // Snapshot
             op_snapshot: Op::snapshot(),
@@ -1718,6 +2011,7 @@ impl Mpool {
             op_rv_to_string: Op::rv_to_string(),
             op_rv_to_boolean: Op::rv_to_boolean(),
             op_rv_phi: Op::rv_phi(),
+            op_rv_param: Op::rv_param(),
 
             // CFG
             op_cfg_start: Op::cfg_start(),
@@ -2320,6 +2614,17 @@ impl Mpool {
         return n;
     }
 
+    pub fn new_rv_param(&mut self, idx: Nref, bcpos: u32) -> Nref {
+        let mut n = Node::new(
+            Oref::clone(&self.op_rv_param),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut n, idx);
+        self.watch_node(&n);
+        return n;
+    }
+
     // -------------------------------------------------------------------------
     // Phi
     pub fn new_rv_phi(&mut self, bcpos: u32) -> Nref {
@@ -2334,6 +2639,16 @@ impl Mpool {
     pub fn new_placeholder(&mut self, bcpos: u32) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_placeholder),
+            self.node_next_id(),
+            bcpos,
+        );
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_loop_iv_placeholder(&mut self, bcpos: u32) -> Nref {
+        let n = Node::new(
+            Oref::clone(&self.op_loop_iv_placeholder),
             self.node_next_id(),
             bcpos,
         );

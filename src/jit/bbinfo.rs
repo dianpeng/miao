@@ -61,6 +61,9 @@ pub struct BBInfoSet {
 }
 
 impl JumpEdge {
+    fn new(j: JumpType, id: u32) -> JumpEdge {
+        JumpEdge { jtype: j, bid: id }
+    }
     fn new_uncond(id: u32) -> JumpEdge {
         JumpEdge {
             jtype: JumpType::Uncond,
@@ -256,24 +259,29 @@ impl BBInfoSet {
             loop_range: LoopRange::new(),
         }
     }
+
+    pub fn at(&self, i: u32) -> &BBInfo {
+        return &self.bbinfo_list[i as usize];
+    }
+    pub fn at_mut(&mut self, i: u32) -> &mut BBInfo {
+        return &mut self.bbinfo_list[i as usize];
+    }
+
+    // printing the BBInfoSet as dot graph for visulization
 }
 
 // ------------------------------------------------------------------------
-// Part one: Scanning the Bytecode Array to form the Basic Block Information
+// Basic Block Creation
 //
-//   This part is used to do a pre-scanning of the bytecode array to gather
-//   following information,
+// This pass deals with few pre-stage thing before starting the main IR graph
+// construction and we try to keep this process clean and simple.
 //
-//   1) Basic Block reachable from the starting of the bytecode
+// 1) BB creation
+//    It recognizes all the BB and also generates link between. Additionally
+//    links are categorized
 //
-//      It implicitly eliminates dead basic block
-//
-//   2) Variable assignment of potential PHI
-//
-//      Notes, we don't generate strict form of SSA but place phi as we need. To
-//      address the issue during bytecode building of loop induction variable
-//      inside of the loop, we detect those potential loop induction variable
-//      here before entering into the loop.
+// 2) Loop induction variable recognition
+//    It tries to learn all the loop iv in each BB for later loop IV generation
 
 pub struct BBInfoBuilder {
     function: FuncRef,
@@ -304,6 +312,13 @@ impl BBInfoBuilder {
         return self.function.borrow().proto.code.array[idx as usize].clone();
     }
 
+    fn bb_at(&self, idx: u32) -> &BBInfo {
+        return &self.out.bbinfo_list[idx as usize];
+    }
+
+    fn bb_at_mut(&mut self, idx: u32) -> &mut BBInfo {
+        return &mut self.out.bbinfo_list[idx as usize];
+    }
     // The stack offset starting for each temporary variables, the parser will
     // essentially hoist all the local variable, regardless whether it is in
     // a nested lexical scope or not to the beginning of the function.
@@ -315,8 +330,24 @@ impl BBInfoBuilder {
     // have a simple pattern, as Load/Store. A store will essentially mutate
     // a local variable and a load will just use the local variable
     fn is_tmp_var(&self, idx: u32) -> bool {
-        return idx >= 0 && idx < self.tmp_var_size() as u32;
+        return idx < self.tmp_var_size() as u32;
     }
+
+    // ----------------------------------------------------------------------
+    // Basic Block Discovery Algorithm
+    //
+    //   The algorithm has been splitted into 2 passes,
+    //
+    //   1) Pass one is to identify all the BB, a BB is been recognized as we
+    //      scanning the bytecode array. Until we hit a control transfer bytecode
+    //      or we hit the start point of another already discoveried BB, then
+    //      we learn there's a BB.
+    //
+    //   2) Pass two is to be used for linking the BB's edge. Including its
+    //      predecessor and successor. Each BB can have multiple predecessor,
+    //      but can at most have 2 successor (due to the bytecode). Additionally
+    //      each jump edge will be labeled with additional information for later
+    //      IR construction.
 
     // build a BB starting from the specific code position until it hits a
     // jump instruction, returns the jump instruction's position or end of
@@ -325,14 +356,36 @@ impl BBInfoBuilder {
         let mut bc_idx = pc;
         let bc_len = self.function.borrow().proto.code.len() as u32;
 
-        while bc_idx < bc_len {
+        // Check situation that the a single BB just have one jump, this is
+        // possible when generating loop rotation header.
+        {
+            let bytecode = self.bc_at(bc_idx);
+            match bytecode {
+                Bytecode::JumpFalse(_)
+                | Bytecode::LoopBack(_)
+                | Bytecode::Jump(_)
+                | Bytecode::And(_)
+                | Bytecode::Or(_)
+                | Bytecode::Ternary(_)
+                | Bytecode::Return(_)
+                | Bytecode::Halt => {
+                    // This BB just have one single instruction which does a
+                    // control flow transfer
+                    return bc_idx;
+                }
+                _ => (),
+            };
+        }
 
+        bc_idx += 1;
+
+        while bc_idx < bc_len {
             // (0) If the bc_idx points to an already existed BB, then just stop
             //     here, since we should not let the BB overlap with other BB.
             match &self.out.bc_from_map_bbinfo[bc_idx as usize] {
                 Option::Some(_) => {
                     debug_assert!(bc_idx - 1 >= pc);
-                    return (bc_idx - 1);
+                    return bc_idx - 1;
                 }
                 _ => (),
             };
@@ -357,47 +410,42 @@ impl BBInfoBuilder {
             bc_idx += 1;
         }
 
+        // Currently, we should never reach the end of bytecode since at least
+        // one halt will be inserted at the end of each proto's bytecode array
         unreachable!();
     }
 
     // Helper to add a bb from the specified CodePos as starting point. Notes
     // this function take care of the loop jump, ie jump back stuff if needed.
-    fn add_bbinfo(&mut self, cp: u32, pred: Option<JumpEdge>) -> (u32, bool) {
+    fn add_bbinfo(&mut self, cp: u32) -> (u32, bool) {
         // (1) check whether existed or not, if so we just need to nothing but
         //     return the existed block's id
         match &self.out.bc_from_map_bbinfo[cp as usize] {
             Option::Some(id) => {
-                match pred {
-                    Option::Some(je) => {
-                        self.out.bbinfo_list[*id as usize].pred.push(je);
-                    }
-                    _ => (),
-                };
                 return (*id, false);
             }
             _ => (),
         };
 
         // (2) check whether jumps into the middle of a existed BB or overlapped
-        //     with the existed blocks. 
+        //     with the existed blocks.
         //
         //     2 situations are needed to be considered :
         //
-        //     1) the cp points to the middle of an existed block, so this 
+        //     1) the cp points to the middle of an existed block, so this
         //        block needs to be splitted
         //
         //     2) the cp pointed range includes the existed blocks, this is
         //        covered by the scan_until_jump which will consider the existed
         //        BB instead of just bytecodes
+        //
         let mut new_range = Option::<(u32, u32, u32)>::None;
         for bb in self.out.bbinfo_list.iter_mut() {
             if bb.bc_from < cp && bb.bc_to >= cp {
                 // the jump jumps into the middle of an already existed block,
                 // so split the block right at the position of cp
                 let new_end = bb.bc_to;
-                bb.bc_to = cp - 1;
                 new_range = Option::Some((cp, new_end, bb.id));
-                self.out.bc_to_map_bbinfo[cp as usize] = Option::Some(bb.id);
                 break;
             }
         }
@@ -410,24 +458,15 @@ impl BBInfoBuilder {
                     .bbinfo_list
                     .push(BBInfo::new_range(idx, start, end));
 
+                // setup index for current current BB
                 self.out.bc_from_map_bbinfo[start as usize] = Option::Some(idx);
                 self.out.bc_to_map_bbinfo[end as usize] = Option::Some(idx);
 
-                // link the prev_id to the current BB as direct jump
-                self.out.bbinfo_list[prev_id as usize].lhs =
-                    Option::Some(JumpEdge::new_uncond(idx));
+                // setup index for previous BB
+                self.out.bbinfo_list[prev_id as usize].bc_to = cp - 1;
+                self.out.bc_to_map_bbinfo[(cp - 1) as usize] =
+                    Option::Some(prev_id);
 
-                self.out
-                    .bbinfo_list[idx as usize]
-                    .pred
-                    .push(JumpEdge::new_uncond(prev_id));
-
-                match pred {
-                    Option::Some(je) => {
-                        self.out.bbinfo_list[idx as usize].pred.push(je);
-                    }
-                    _ => (),
-                };
                 return (idx, false);
             }
             _ => (),
@@ -438,36 +477,32 @@ impl BBInfoBuilder {
             let idx = self.out.bbinfo_list.len() as u32;
             self.out.bbinfo_list.push(BBInfo::new_default(idx, cp));
             self.out.bc_from_map_bbinfo[cp as usize] = Option::Some(idx);
-            match pred {
-                Option::Some(je) => {
-                    self.out.bbinfo_list[idx as usize].pred.push(je);
-                }
-                _ => (),
-            };
             return (idx, true);
         }
     }
 
-    // This function building out the basic skeleton of the basic block and do
-    // the connection, marking the category etc ... It doesn't annotate fully
-    // for each block since it doesn't know the stuff.
-    fn build_bb(&mut self) {
+    // Pass one, discovery of all the BB. Notes this pass doesn't generate link
+    // but just recognize all the BB and store them into bbinfo_lists. Additionally
+    // all the bc_from/bc_to mapping index are setup.
+    fn discovery_bb(&mut self) {
         let mut bc_idx;
-        let bc_len = self.function.borrow().proto.code.len();
 
+        let bc_len = self.function.borrow().proto.code.len();
         self.out.bc_from_map_bbinfo.resize(bc_len, Option::None);
         self.out.bc_to_map_bbinfo.resize(bc_len, Option::None);
 
         // A worker queue keep track of the unfinshed task/job
         let mut wqueue = VecDeque::<u32>::new();
-        self.add_bbinfo(0, Option::None);
+        self.add_bbinfo(0);
         wqueue.push_back(0);
 
         while wqueue.len() != 0 {
             let bb_idx = wqueue.pop_front().unwrap();
             bc_idx = self.out.bbinfo_list[bb_idx as usize].bc_from;
 
-            let last_jump = self.scan_until_jump(bc_idx + 1);
+            let last_jump = self.scan_until_jump(bc_idx);
+
+            // the last bytecode
             let bytecode = self.bc_at(last_jump);
 
             self.out.bbinfo_list[bb_idx as usize].bc_to = last_jump;
@@ -478,137 +513,87 @@ impl BBInfoBuilder {
                 Bytecode::JumpFalse(cp) => {
                     // false branch
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            cp,
-                            Option::Some(JumpEdge::new_false(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(cp);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].lhs =
-                            Option::Some(JumpEdge::new_false(idx));
                     }
 
                     // true branch
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            last_jump + 1,
-                            Option::Some(JumpEdge::new_true(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(last_jump + 1);
 
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].rhs =
-                            Option::Some(JumpEdge::new_true(idx));
                     }
                 }
 
                 Bytecode::Jump(cp) => {
-                    let (idx, is_new) = self.add_bbinfo(
-                        cp,
-                        Option::Some(JumpEdge::new_uncond(bb_idx)),
-                    );
+                    let (idx, is_new) = self.add_bbinfo(cp);
                     if is_new {
                         wqueue.push_back(idx);
                     }
-                    self.out.bbinfo_list[bb_idx as usize].lhs =
-                        Option::Some(JumpEdge::new_uncond(idx));
                 }
 
                 Bytecode::LoopBack(cp) => {
-                    let (idx, is_new) = self.add_bbinfo(
-                        cp,
-                        Option::Some(JumpEdge::new_loop_back(bb_idx)),
-                    );
+                    let (idx, is_new) = self.add_bbinfo(cp);
                     if is_new {
                         wqueue.push_back(idx);
                     }
-                    self.out.bbinfo_list[bb_idx as usize].lhs =
-                        Option::Some(JumpEdge::new_loop_back(idx));
 
-                    assert!(cp < bc_idx);
-                    self.out.loop_range.add((cp, bc_idx));
+                    debug_assert!(cp < last_jump);
+                    self.out.loop_range.add((cp, last_jump));
                 }
 
                 Bytecode::And(cp) => {
                     // false jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            cp,
-                            Option::Some(JumpEdge::new_and_false(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(cp);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].lhs =
-                            Option::Some(JumpEdge::new_false(idx));
                     }
 
                     // true jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            last_jump + 1,
-                            Option::Some(JumpEdge::new_true(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(last_jump + 1);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].rhs =
-                            Option::Some(JumpEdge::new_true(idx));
                     }
                 }
                 Bytecode::Or(cp) => {
                     // true jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            cp,
-                            Option::Some(JumpEdge::new_or_true(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(cp);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].rhs =
-                            Option::Some(JumpEdge::new_true(idx));
                     }
 
                     // false jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            last_jump + 1,
-                            Option::Some(JumpEdge::new_false(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(last_jump + 1);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].lhs =
-                            Option::Some(JumpEdge::new_false(idx));
                     }
                 }
                 Bytecode::Ternary(cp) => {
                     // false jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            cp,
-                            Option::Some(JumpEdge::new_false(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(cp);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].lhs =
-                            Option::Some(JumpEdge::new_false(idx));
                     }
                     // true jump
                     {
-                        let (idx, is_new) = self.add_bbinfo(
-                            last_jump + 1,
-                            Option::Some(JumpEdge::new_true(bb_idx)),
-                        );
+                        let (idx, is_new) = self.add_bbinfo(last_jump + 1);
                         if is_new {
                             wqueue.push_back(idx);
                         }
-                        self.out.bbinfo_list[bb_idx as usize].rhs =
-                            Option::Some(JumpEdge::new_true(idx));
                     }
                 }
 
@@ -620,20 +605,133 @@ impl BBInfoBuilder {
                 // jump because of the block is been splitted, if so the last
                 // bytecode is not a control flow instruction
                 _ => {
-                    let (idx, is_new) = self.add_bbinfo(
-                        last_jump + 1,
-                        Option::Some(JumpEdge::new_uncond(bb_idx)));
-
-                    self.out.bbinfo_list[bb_idx as usize].lhs = 
-                        Option::Some(JumpEdge::new_uncond(idx));
+                    let (_, is_new) = self.add_bbinfo(last_jump + 1);
 
                     // the block must already been existed otherwise
                     // scan_until_jump will return us a real jump instruction
-                    assert!(!is_new);
+                    debug_assert!(!is_new);
                 }
             };
         }
     }
+
+    fn link_edge(
+        &mut self,
+        current_bid: u32,
+        target_bc: u32,
+        jump_type: JumpType,
+    ) -> u32 {
+        match &self.out.bc_from_map_bbinfo[target_bc as usize] {
+            Option::Some(v) => {
+                self.out.bbinfo_list[*v as usize]
+                    .pred
+                    .push(JumpEdge::new(jump_type, current_bid));
+                return *v;
+            }
+            _ => unreachable!(),
+        };
+    }
+
+    // Pass 2, perform the BB linking and jump edge labelling
+    fn bb_link_edge(&mut self) {
+        let len = self.out.bbinfo_list.len() as u32;
+        let mut id = 0;
+
+        while id < len {
+            let cur_bc = self.bb_at(id).bc_to;
+            let last_bytecode = self.bc_at(cur_bc);
+            let ft_bc = cur_bc + 1;
+
+            match last_bytecode {
+                Bytecode::JumpFalse(bc_pos) | Bytecode::Ternary(bc_pos) => {
+                    {
+                        let target =
+                            self.link_edge(id, bc_pos, JumpType::CondFalse);
+
+                        self.bb_at_mut(id).lhs =
+                            Option::Some(JumpEdge::new_false(target));
+                    }
+
+                    {
+                        let target =
+                            self.link_edge(id, ft_bc, JumpType::CondTrue);
+
+                        self.bb_at_mut(id).rhs =
+                            Option::Some(JumpEdge::new_true(target));
+                    }
+                }
+
+                Bytecode::And(bc_pos) => {
+                    // false branch
+                    {
+                        let target =
+                            self.link_edge(id, bc_pos, JumpType::AndFalse);
+                        self.bb_at_mut(id).lhs =
+                            Option::Some(JumpEdge::new_and_false(target));
+                    }
+
+                    // true branch
+                    {
+                        let target =
+                            self.link_edge(id, ft_bc, JumpType::CondTrue);
+                        self.bb_at_mut(id).rhs =
+                            Option::Some(JumpEdge::new_true(target));
+                    }
+                }
+
+                Bytecode::Or(bc_pos) => {
+                    // false branch
+                    {
+                        let target =
+                            self.link_edge(id, ft_bc, JumpType::CondFalse);
+                        self.bb_at_mut(id).lhs =
+                            Option::Some(JumpEdge::new_false(target));
+                    }
+
+                    // true branch
+                    {
+                        let target =
+                            self.link_edge(id, bc_pos, JumpType::OrTrue);
+                        self.bb_at_mut(id).rhs =
+                            Option::Some(JumpEdge::new_or_true(target));
+                    }
+                }
+
+                Bytecode::LoopBack(bc_pos) => {
+                    let target = self.link_edge(id, bc_pos, JumpType::LoopBack);
+                    self.bb_at_mut(id).lhs =
+                        Option::Some(JumpEdge::new_loop_back(target));
+                }
+
+                Bytecode::Jump(cp) => {
+                    let target = self.link_edge(id, cp, JumpType::Uncond);
+                    self.bb_at_mut(id).lhs =
+                        Option::Some(JumpEdge::new_uncond(target));
+                }
+
+                Bytecode::Return(_) | Bytecode::Halt => (),
+
+                _ => {
+                    let target = self.link_edge(id, ft_bc, JumpType::Uncond);
+                    self.bb_at_mut(id).lhs =
+                        Option::Some(JumpEdge::new_uncond(target));
+                }
+            };
+
+            id += 1;
+        }
+    }
+
+    fn build_bb(&mut self) {
+        self.discovery_bb();
+        self.bb_link_edge();
+    }
+
+    // -------------------------------------------------------------------------
+    // Algorithm part 2
+    //
+    //   Identify loop induction variable inside of a BB which is contained by
+    //   loop range.
 
     // analyze the bytecode lies in range between [start, end), the [start, end)
     // forms a valid basic block
@@ -676,7 +774,7 @@ impl BBInfoBuilder {
                         if bb.bc_to == end {
                             break;
                         } else {
-                            curbc = bb.bc_to;
+                            curbc = bb.bc_to + 1;
                         }
                     } else {
                         // We should never have such cases
@@ -684,7 +782,7 @@ impl BBInfoBuilder {
                     }
                 }
                 _ => {
-                    unreachable!();
+                    curbc += 1;
                 }
             };
         }
@@ -693,7 +791,7 @@ impl BBInfoBuilder {
     }
 
     fn do_loop_iv_assignment(&mut self) {
-        self.out.loop_range.assert_no_overlap();
+        // self.out.loop_range.assert_no_overlap();
 
         let mut visited = bitvec![u32, Msb0;];
         visited.resize(self.out.bbinfo_list.len(), false);

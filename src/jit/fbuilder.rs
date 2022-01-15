@@ -37,7 +37,7 @@ type EnvList = Vec<Envptr>;
 // Build a IR graph from the input bytecode. The output is a SSA sea of nodes
 // style graph representation of the input. Both OSR and function level are
 // building from here.
-struct FBuilder {
+pub struct FBuilder {
     // Input
     function: FuncRef,
     arg_count: u32,
@@ -59,6 +59,12 @@ struct FBuilder {
 
     return_list: Vec<Nref>,
     halt_list: Vec<Nref>,
+
+    // All the pending loop iv's PHI node, they may be patched during some
+    // BB code generation since they are real loop IV phis, they may never
+    // be patched since they are the same throughout the loop, if so we need
+    // to revisit them and modify them as its singleton
+    phi_list: Vec<Nref>,
 }
 
 impl Env {
@@ -74,9 +80,6 @@ impl Env {
 }
 
 impl FBuilder {
-    fn jptr(&self) -> Jitptr {
-        return Jitptr::clone(&self.jit);
-    }
     fn mptr(&self) -> Mpptr {
         return Mpptr::clone(&self.jit.borrow().mpool);
     }
@@ -103,11 +106,9 @@ impl FBuilder {
     fn enter_env(&mut self, bbinfo_id: u32) -> bool {
         if self.has_cur_env() {
             let env = self.cur_env();
-            let bbinfo =
-                &self.bbinfo_set.bbinfo_list[env.borrow().bbinfo_id as usize];
+            let bbinfo = self.bbinfo_set.at(env.borrow().bbinfo_id);
             debug_assert!(bbinfo.is_succ(bbinfo_id));
         }
-
         // (0) do the duplication here, notes, the bbinfo_id pointed Env should
         //     already been created done, just need to lookup it
         let (_, new_env_idx) = {
@@ -122,16 +123,32 @@ impl FBuilder {
             // before we enter into the BB. The visiting of each BB is based on
             // pre order (ignore the loop back edge), so when a BB is been
             // visiting, its predecessor nodes should already have been visited.
-            let pred_len =
-                self.bbinfo_set.bbinfo_list[bbinfo_id as usize].pred.len();
+            let pred_len = self.bbinfo_set.at(bbinfo_id).pred.len();
 
             match pred_len {
+                0 => {
+                    // must be start of the function, perform function prolog
+                    debug_assert!(bbinfo_id == 0);
+                    let mut i: u32 = 0;
+                    while i < self.arg_count {
+                        let idx = self.mptr().borrow_mut().new_imm_index(i, 0);
+                        let param =
+                            self.mptr().borrow_mut().new_rv_param(idx, 0);
+                        new_env.borrow_mut().stack.push(param);
+                        i += 1;
+                    }
+
+                    // a value used to represent callframe slot inside of the
+                    // interpreter frame
+                    new_env
+                        .borrow_mut()
+                        .stack
+                        .push(self.mptr().borrow_mut().new_placeholder(0));
+                }
                 1 => {
                     let prev_env_id = {
-                        let jump_edge = self.bbinfo_set.bbinfo_list
-                            [bbinfo_id as usize]
-                            .pred[0]
-                            .clone();
+                        let jump_edge =
+                            self.bbinfo_set.at(bbinfo_id).pred[0].clone();
                         debug_assert!(!jump_edge.is_loop_back());
                         jump_edge.bid
                     };
@@ -159,10 +176,7 @@ impl FBuilder {
                         let mut cur_stk = Option::<u32>::None;
                         let mut idx = 0;
 
-                        for p in self.bbinfo_set.bbinfo_list[bbinfo_id as usize]
-                            .pred
-                            .iter()
-                        {
+                        for p in self.bbinfo_set.at(bbinfo_id).pred.iter() {
                             let mut synth = 0;
                             let prev_env_id = {
                                 match p.jtype {
@@ -206,20 +220,22 @@ impl FBuilder {
 
                     let mut stk_idx = 0;
                     let mut vstk = ValStack::new();
-                    let bbinfo_bcfrom =
-                        self.bbinfo_set.bbinfo_list[bbinfo_id as usize].bc_from;
+                    let bbinfo_bcfrom = self.bbinfo_set.at(bbinfo_id).bc_from;
 
                     while stk_idx < stk_size {
                         let mut phi =
                             self.mptr().borrow_mut().new_rv_phi(bbinfo_bcfrom);
+
+                        self.phi_list.push(Nref::clone(&phi));
+
                         let mut pred_idx = 0;
 
-                        for p in self.bbinfo_set.bbinfo_list[bbinfo_id as usize]
-                            .pred
-                            .iter()
-                        {
-                            let prev_env = self.get_env(p.bid);
+                        // If the variable is been treated as loop iv
+                        // then it should be placed into the loop iv
+                        // vector for later patch
 
+                        for p in self.bbinfo_set.at(bbinfo_id).pred.iter() {
+                            let prev_env = self.get_env(p.bid);
                             if p.jtype == JumpType::LoopBack {
                                 // loopback edge, so the predecessor may not be
                                 // visited yet, just place a placeholder into
@@ -228,23 +244,9 @@ impl FBuilder {
                                     &mut phi,
                                     self.mptr()
                                         .borrow_mut()
-                                        .new_placeholder(bbinfo_bcfrom),
+                                        .new_loop_iv_placeholder(bbinfo_bcfrom),
                                     Nref::clone(&prev_env.borrow().cfg),
                                 );
-
-                                // If the variable is been treated as loop iv
-                                // then it should be placed into the loop iv
-                                // vector for later patch
-                                if self.bbinfo_set.bbinfo_list
-                                    [bbinfo_id as usize]
-                                    .loop_iv_assignment
-                                    [stk_idx as usize]
-                                {
-                                    new_env
-                                        .borrow_mut()
-                                        .loop_iv
-                                        .push((stk_idx, Nref::clone(&phi)));
-                                }
                             } else {
                                 let l = prev_env.borrow().stack.len() as u32;
                                 if stk_idx == l {
@@ -284,6 +286,7 @@ impl FBuilder {
                                     let cur_val = prev_env.borrow().stack
                                         [stk_idx as usize]
                                         .clone();
+
                                     let cur_cfg = prev_env.borrow().cfg.clone();
                                     Node::add_phi_value(
                                         &mut phi, cur_val, cur_cfg,
@@ -312,6 +315,22 @@ impl FBuilder {
                 }
             };
 
+            {
+                let loop_iv_size =
+                    self.bbinfo_set.at(bbinfo_id).loop_iv_assignment.len();
+
+                let v_len = new_env.borrow().stack.len();
+                let mut idx = 0;
+                while idx < v_len && idx < loop_iv_size {
+                    if self.bbinfo_set.at(bbinfo_id).loop_iv_assignment[idx] {
+                        let phi = Nref::clone(&new_env.borrow().stack[idx]);
+                        debug_assert!(phi.borrow().is_phi());
+                        new_env.borrow_mut().loop_iv.push((idx as u32, phi));
+                    }
+                    idx += 1;
+                }
+            }
+
             (new_env, new_env_idx)
         };
 
@@ -336,18 +355,11 @@ impl FBuilder {
     //    write i = i, we should just rule out this situation
     //
     fn leave_env(&mut self) {
-        // 1. Patch the loop iv assignment here, ie modification of the loop
-        //    variables
-        for (idx, phi) in self.cur_env().borrow().loop_iv.iter() {
-            let current = self.stack_index(*idx);
-            if Nref::ptr_eq(&current, &phi) {
-                continue;
-            } else {
-                let mut x = Nref::clone(phi);
-                Node::add_value(&mut x, current);
-            }
+        for pp in self.cur_env().borrow().loop_iv.iter() {
+            let current = self.stack_index(pp.0);
+            let mut phi = Nref::clone(&pp.1);
+            assert!(Node::replace_placeholder_value(&mut phi, current) == 1);
         }
-
         self.cur_env.pop();
     }
 
@@ -465,7 +477,10 @@ impl FBuilder {
     // ====================================================================
     // Deoptimization entry
     fn add_deopt(&mut self, bc: u32) {
-        debug_assert!(self.graph.borrow().deopt_table[bc as usize].is_none());
+        if self.graph.borrow().deopt_table[bc as usize].is_some() {
+            return;
+        }
+
         let mut snap = self.mptr().borrow_mut().new_snapshot(bc);
         let env = self.cur_env();
         let mut stk_idx = 0;
@@ -738,18 +753,18 @@ impl FBuilder {
     fn b_iterator_has(&mut self, bcpos: u32) -> bool {
         let opr = self.stack_top0();
         let itr = self.mptr().borrow_mut().new_rv_iterator_has(opr, bcpos);
-        self.check_effect_node(&itr);
+        self.output_tos(itr);
         return true;
     }
     fn b_iterator_next(&mut self, bcpos: u32) -> bool {
         let opr = self.stack_top0();
-        let itr = self.mptr().borrow_mut().new_rv_iterator_has(opr, bcpos);
-        self.check_effect_node(&itr);
+        let itr = self.mptr().borrow_mut().new_rv_iterator_next(opr, bcpos);
+        self.output_tos(itr);
         return true;
     }
     fn b_iterator_value(&mut self, bcpos: u32) -> bool {
         let opr = self.stack_top0();
-        let itr = self.mptr().borrow_mut().new_rv_iterator_next(opr, bcpos);
+        let itr = self.mptr().borrow_mut().new_rv_iterator_value(opr, bcpos);
         self.output_tos(itr);
         return true;
     }
@@ -803,6 +818,7 @@ impl FBuilder {
     fn b_stk_store(&mut self, idx: u32) -> bool {
         let v = self.stack_top0();
         self.stack_store(idx, v);
+        self.stack_pop();
         return true;
     }
     fn b_stk_push_n(&mut self, idx: u32, bcpos: u32) -> bool {
@@ -907,13 +923,6 @@ impl FBuilder {
         return true;
     }
 
-    fn b_halt(&mut self, bcpos: u32) -> bool {
-        let tos = self.una();
-        let nd = self.mptr().borrow_mut().new_rv_halt(tos, bcpos);
-        self.check_effect_node(&nd);
-        return true;
-    }
-
     // upvalue
     fn b_load_upvalue(&mut self, index: Index, bcpos: u32) -> bool {
         let idx = self.mptr().borrow_mut().new_imm_index(index, bcpos);
@@ -1013,7 +1022,7 @@ impl FBuilder {
 
             // notes, Halt is not written here since it is a control flow
             // indicator, which is taken cared specially
-            xx @ _ => {
+            _ => {
                 unreachable!();
             }
         };
@@ -1021,8 +1030,7 @@ impl FBuilder {
 
     fn build_bc_in_bb(&mut self) -> bool {
         let (mut bc_start, bc_end) = {
-            let bbinfo = &self.bbinfo_set.bbinfo_list
-                [self.cur_env().borrow().bbinfo_id as usize];
+            let bbinfo = &self.bbinfo_set.at(self.cur_env().borrow().bbinfo_id);
 
             (bbinfo.bc_from, bbinfo.bc_to)
         };
@@ -1106,10 +1114,10 @@ impl FBuilder {
             }
             idx += 1;
         }
-        return Option::None; 
-    } 
+        return Option::None;
+    }
 
-    fn verify_all_bb_visited(&self) -> bool { 
+    fn verify_all_bb_visited(&self) -> bool {
         return match self.get_bb_unvisited() {
             Option::Some(_) => false,
             _ => true,
@@ -1142,18 +1150,16 @@ impl FBuilder {
     //       3.1.2 otherwise, visit top and then pop from q
     //
     //  Notes, the above iteration will ignore the loop_back edge
-    
-    fn enqueue_bb_child(&self, wqueue: &mut Nidqueue, 
-                        visited: &mut BitVec, child: &Option<JumpEdge>) {
+
+    fn enqueue_bb_child(
+        &self,
+        wqueue: &mut Nidqueue,
+        visited: &mut BitVec,
+        child: &Option<JumpEdge>,
+    ) {
         match child {
             Option::Some(x) => {
                 if x.jtype != JumpType::LoopBack {
-                    // checking pred of x whether they are all visited or not
-                    for p in self.bbinfo_set.bbinfo_list[x.bid as usize].pred.iter() {
-                        if !visited[p.bid as usize] {
-                            wqueue.push_back(p.bid);
-                        }
-                    }
                     if !visited[x.bid as usize] {
                         wqueue.push_back(x.bid);
                     }
@@ -1173,31 +1179,15 @@ impl FBuilder {
 
         // Pre-order visit each BB
         while wqueue.len() != 0 {
-
-            // The following part is kind of tricky. Since we are dealing with
-            // a graph, potentially, a node can be pushed into the queue multiple
-            // times due to following reasons :
-            //   1) Its pred is not visited, so itself cannot be visited
-            //
-            //   2) Its in the queue, but haven't been visited, some other node
-            //      that is been visited can reach this node as successor, so
-            //      the node is not visited yet
-            //
-            // We have one invariants needs to keep, which is a node cannot be
-            // visited if it has pred not been visited. So when we pop the node
-            // out of the queue, we need to make sure that the pred is been
-            // visited, if not, then repush the pred that is not been visited
-            // into the queue along with the node just been poped and rerun the
-            // queue pop logic again to find the node that met the requirements
-            //
-            // Essentially it is just a graph pre-order visiting algorithm
             let cur_idx = wqueue.pop_front().unwrap();
             if visited[cur_idx as usize] {
                 continue;
             } else {
                 let mut has_pred_not_visit = false;
-                for p in self.bbinfo_set.bbinfo_list[cur_idx as usize].pred.iter() {
-                    if !visited[p.bid as usize] {
+                for p in
+                    self.bbinfo_set.bbinfo_list[cur_idx as usize].pred.iter()
+                {
+                    if !p.is_loop_back() && !visited[p.bid as usize] {
                         has_pred_not_visit = true;
                         wqueue.push_back(p.bid);
                     }
@@ -1324,6 +1314,15 @@ impl FBuilder {
         }
     }
 
+    // patch all the phi list to remove those have dangling loop_iv_placeholder
+    // node. If a phi has loop_iv_placeholder, it means the phi needs to remove
+    // that loop_iv_placeholder
+    fn patch_phi_list(&mut self) {
+        for mut x in self.phi_list.iter_mut() {
+            Node::simplify_phi(&mut x);
+        }
+    }
+
     fn build(&mut self) -> bool {
         // (0) prepare the building, creating all the BB and Env object
         self.setup_all_bb();
@@ -1334,7 +1333,10 @@ impl FBuilder {
             return false;
         }
 
-        // (2) Finalize the graph with special node and linking, notes the
+        // (2) Finalize all the phi node
+        self.patch_phi_list();
+
+        // (3) Finalize the graph with special node and linking, notes the
         //     current graph does not have in place deoptimization but the
         //     deoptimization entry is been put into external deoptimization
         //     table.
@@ -1408,6 +1410,7 @@ impl FBuilder {
             env_from_bbinfo_id: Vec::new(),
             return_list: Vec::new(),
             halt_list: Vec::new(),
+            phi_list: Vec::new(),
         }
     }
 
@@ -1449,7 +1452,6 @@ mod fbuilder_tests {
         };
 
         let code_string = proto.code.dump();
-        println!("{}", code_string);
 
         // (1) creating the function object, since we don't have any runtime
         //     information, so just doing nothing at all here.
@@ -1468,39 +1470,157 @@ mod fbuilder_tests {
         return Option::Some((code_string, graph_string));
     }
 
-    #[test]
-    fn basic() {
-        match print_code(
-            r#"
-let a = 10;
-if a > 10 {
-    a = 20;
-} elif (a == 200) {
-    a = 30;
-} elif (a == 40) {
-    a = -10;
-} elif (a == 20) {
-    a -= 20;
-} else {
-    a = 10;
-}
-
-return a + 10;
-            "#,
-        ) {
+    fn do_print_code(c: &str) {
+        match print_code(c) {
             Option::Some((a, b)) => {
-                println!("========================================");
-                println!("            bytecode");
-                println!("========================================");
+                println!("---------------------------------------------------");
+                println!("                Bytecode");
+                println!("---------------------------------------------------");
                 println!("{}", a);
 
-                println!("========================================");
-                println!("            graph");
-                println!("========================================");
+                println!("---------------------------------------------------");
+                println!("                Graph");
+                println!("---------------------------------------------------");
                 println!("{}", b);
             }
-
             _ => (),
         };
+    }
+
+    #[test]
+    fn basic() {
+        /**
+         * Basic cases for all needed to cover IR generation code
+         *
+         * 1) basic expression
+         *
+         * 2) basic branch
+         *   2.1) Sole if
+         *   2.2) Sole if and elif
+         *   2.3) Sole if and else
+         *   2.4) If elif and else
+         *
+         * 3) Loop
+         *   3.1) Forever loop
+         *     3.1.1) Sole for
+         *     3.1.2) For nested loop
+         *   3.2) Iterator loop
+         *   3.3) Loop control
+         *     3.3.1) Sole if break
+         *     3.3.2) Sole if continue
+         *     3.3.3) Sole if break and continue
+         *
+         * 4) Effect operations
+         *   4.1) Global
+         *   4.2) Upvalue
+         *   4.3) Call
+         *
+         */
+        do_print_code(
+            r#"
+let x = a;
+for uuvv in x {
+}
+return xx;
+"#,
+        );
+
+        /*
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = 20;
+        if a > 0 {
+            if a > 20 {
+                if a > 30 {
+                    if a > 40 {
+                        b = 30;
+                    }
+                } else {
+                    b = 100;
+                }
+            }
+        }
+        return b;
+                    "#,
+                );
+
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = 20;
+        if a > 0 {
+            b = 30;
+        }
+        return b;
+
+                    "#,
+                );
+
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = 20;
+        if a > 0 {
+            b = 30;
+        } else {
+            b = 40;
+        }
+        return b;
+
+                    "#,
+                );
+
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = 20;
+        if a > 0 {
+            b = 30;
+        }
+        return a;
+
+                    "#,
+                );
+
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = cc;
+        return a + b * 2;
+                    "#,
+                );
+
+                do_print_code(
+                    r#"
+        let a = 1;
+        let b = 1;
+        let c = 1;
+
+        for {
+            if a > 10 {
+                break;
+            }
+            a += 1;
+
+            for {
+                if b > 20 {
+                    break;
+                }
+                b += 1;
+
+                for {
+                    if c > 30 {
+                        break;
+                    }
+                    c += 1;
+                }
+            }
+        }
+
+        return b;
+                    "#,
+                );
+        */
     }
 }

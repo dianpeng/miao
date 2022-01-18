@@ -4,7 +4,6 @@
 pub enum FType {
     Int,
     Real,
-		Number,
     Boolean,
     Null,
     Str,

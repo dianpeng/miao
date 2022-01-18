@@ -7,8 +7,9 @@ use std::rc::Weak;
 
 use crate::bc::bytecode::*;
 use crate::heap::heap::*;
+use crate::ic::feedback::FeedbackList;
+use crate::ic::ftype::*;
 use crate::interp::exec::Conversion;
-use crate::ic::feedback::{FeedbackList};
 
 // -----------------------------------------------------------------------------
 // Execution of the runtime, ie the VM.
@@ -705,6 +706,22 @@ pub fn handle_is_real(x: &Handle) -> bool {
     match x {
         Handle::Real(_) => return true,
         _ => return false,
+    };
+}
+
+pub fn handle_map_ftype(x: &Handle) -> FType {
+    match x {
+        Handle::Int(_) => return FType::Int,
+        Handle::Real(_) => return FType::Real,
+        Handle::Boolean(_) => return FType::Boolean,
+        Handle::Null => return FType::Null,
+        Handle::Str(_) => return FType::Str,
+        Handle::List(_) => return FType::List,
+        Handle::Object(_) => return FType::Object,
+        Handle::Function(_) => return FType::Function,
+        Handle::NFunction(_) => return FType::NFunction,
+        Handle::Iter(_) => return FType::Iter,
+        _ => return FType::Unknown,
     };
 }
 

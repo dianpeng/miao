@@ -1436,7 +1436,7 @@ macro_rules! bin_arithmetic {
                 };
             } else {
                 if handle_is_number(&l) && handle_is_number(&r) {
-                    fd.binary(FType::Number, FType::Number);
+                    fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                     let (lv, rv) = Util::upgrade_number(&l, &r);
                     return Result::Ok(Handle::Real(lv $op rv));
                 } else {
@@ -1500,7 +1500,7 @@ macro_rules! bin_comparison {
                 };
             } else {
                 if handle_is_number(&l) && handle_is_number(&r) {
-                    fd.binary(FType::Number, FType::Number);
+                    fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                     let (lv, rv) = Util::upgrade_number(&l, &r);
                     return Result::Ok(Handle::Boolean(lv $op rv));
                 }
@@ -1563,7 +1563,7 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
-                fd.binary(FType::Number, FType::Number);
+                fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv + rv));
             } else {
@@ -1618,7 +1618,7 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
-                fd.binary(FType::Number, FType::Number);
+                fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv / rv));
             } else {
@@ -1699,7 +1699,7 @@ impl Arithmetic {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
-                fd.binary(FType::Number, FType::Number);
+                fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Real(lv.powf(rv)));
             }
@@ -1803,7 +1803,7 @@ impl Comparison {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
-                fd.binary(FType::Number, FType::Number);
+                fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Boolean(lv == rv));
             }
@@ -1905,7 +1905,7 @@ impl Comparison {
             };
         } else {
             if handle_is_number(&l) && handle_is_number(&r) {
-                fd.binary(FType::Number, FType::Number);
+                fd.binary(handle_map_ftype(&l), handle_map_ftype(&r));
                 let (lv, rv) = Util::upgrade_number(&l, &r);
                 return Result::Ok(Handle::Boolean(lv != rv));
             }

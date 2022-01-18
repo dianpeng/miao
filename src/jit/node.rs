@@ -1,5 +1,7 @@
+use crate::ic::ftype::*;
 use crate::jit::j::*;
 use crate::object::object::*;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::iter;
@@ -15,7 +17,6 @@ pub type BBref = Rc<RefCell<BBlk>>;
 pub type Nid = u32;
 pub type BBList = Vec<BBref>;
 pub type Mpptr = Rc<RefCell<Mpool>>;
-
 pub type Nqueue = VecDeque<Nref>;
 pub type Nidqueue = VecDeque<Nid>;
 
@@ -65,27 +66,122 @@ pub enum DefUse {
 
 pub type DefUseList = Vec<DefUse>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Imm {
     Index(u32),
+
     ImmU32(u32),
     ImmU16(u16),
     ImmU8(u8),
+
     ImmI64(i64),
     ImmI32(i32),
     ImmI16(i16),
     ImmI8(i8),
+
     ImmF64(f64),
+    ImmBool(bool),
+    ImmNull,
+
+    // duplicate the string from the string table
+    ImmString(String),
+
     Invalid,
 }
 
-pub struct JType;
+// Type information for the node. Each node should have a type information, and
+// the type information will be used later on during the optimization pass to
+// enable certain optimization
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MainType {
+    // High level types
+    Int,
+    Real,
+    Boolean,
+    Null,
+    Str,
+    List,
+    Object,
+    Function,
+    NFunction,
+    Iter,
+
+    Unknown,
+}
+
+pub fn ftype_map_main_type(x: &FType) -> MainType {
+    return match x {
+        FType::Int => MainType::Int,
+        FType::Real => MainType::Real,
+        FType::Boolean => MainType::Boolean,
+        FType::Null => MainType::Null,
+        FType::Str => MainType::Str,
+        FType::List => MainType::List,
+        FType::Object => MainType::Object,
+        FType::Function => MainType::Function,
+        FType::NFunction => MainType::NFunction,
+        FType::Iter => MainType::Iter,
+        FType::Unknown => MainType::Unknown,
+    };
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SubType {
+    // Integer sub type
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+
+    // Float sub type
+    F64,
+
+    // Not available
+    Invalid,
+}
+
+#[derive(Clone, Debug)]
+pub struct JType {
+    pub main: MainType,
+    pub sub: SubType,
+}
 
 // Bytecode context, used to record the bytecode related information, ie for
 // generating the deoptimize stub etc ...
+#[derive(Clone, Debug)]
 pub struct BcCtx {
     pub bc: u32,
     pub frame: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuiltinCall {
+    // arithmetic
+    ArithAdd,
+    ArithSub,
+    ArithMul,
+    ArithDiv,
+    ArithMod,
+    ArithPow,
+
+    // comparison
+    ArithEq,
+    ArithNe,
+    ArithLt,
+    ArithLe,
+    ArithGt,
+    ArithGe,
+
+    // unary
+    UnaToString,
+    UnaToBoolean,
+    UnaNot,
+    UnaNeg,
+    // string cons
 }
 
 // The graph is orgnized as following, we use a hybrid method of Sea of nodes and
@@ -132,7 +228,16 @@ pub struct Node {
     // -----------------------------------------------------------------------
     // Other information
     pub alias: Option<Aref>,
-    pub jtype: Option<JType>,
+
+    // -----------------------------------------------------------------------
+    // Type information
+    //
+    // the the_type indicates the original type been emitted by the instruction
+    // since some instruction is already typped. type_hint is the type that is
+    // been inferred from the typper, they are not stable nor for sure. It can
+    // be used as a way to allow speculative type inference.
+    pub the_type: JType,
+    pub type_hint: MainType,
 
     // Whether the node is been treated as dead or not
     pub dead: bool,
@@ -147,10 +252,11 @@ pub enum OpTier {
     Pseudo, // man made node, ie DeoptEntry etc ..., they will be materialized
     // back to lower structure or been removed entirely
     Phi,
-    Bval, // box/unbox operations, we will have special phase to lower them
-    Rval, // high level operations, ie Rval(standsfor Rust Value, boxed)
-    Mid,  // middle tier IR, standsfor none-architecture specific instructions
-    Arch, // arch tier IR, closely related to the target assembly language
+    Bval,  // box/unbox operations, we will have special phase to lower them
+    Guard, // guard operations
+    Rval,  // high level operations, ie Rval(standsfor Rust Value, boxed)
+    Mid,   // middle tier IR, standsfor none-architecture specific instructions
+    Arch,  // arch tier IR, closely related to the target assembly language
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -177,7 +283,11 @@ pub enum Opcode {
     ImmI16,
     ImmI8,
     ImmF64,
+    ImmBool,
+    ImmNull,
+    ImmString,
 
+    // -------------------------------------------------------------------------
     // Boxing and unboxing operation
 
     // BoxXXX operation, take a machine representation value and box it into a
@@ -190,9 +300,20 @@ pub enum Opcode {
     BoxU16,
     BoxU8,
     BoxF64,
+
+    BoxBoolean,
     BoxTrue,
     BoxFalse,
+
     BoxNull,
+
+    BoxPtr,
+    BoxStr,
+    BoxList,
+    BoxObject,
+    BoxIter,
+    BoxFunction,
+    BoxNFunction,
 
     // UnboxXXX operation, take a box value and unbox value back to the machine
     // type represented by the instruction itself. Notes, if the boxed value has
@@ -201,20 +322,71 @@ pub enum Opcode {
     // preferred, which will check the type of the value and deoptimize if the
     // instruction failed
     UnboxI64,
-    UnboxI32,
-    UnboxI16,
-    UnboxI8,
-    UnboxU32,
-    UnboxU16,
-    UnboxU8,
     UnboxF64,
-    UnboxTrue,
-    UnboxFalse,
+    UnboxBoolean,
     UnboxNull,
 
-    // Type guards, these operations will check whether the boxed value has type
-    // otherwise it will just deoptimize, ie jumping to the deoptimize branch
+    // Heap
+    UnboxPtr,
+    UnboxStr,
+    UnboxList,
+    UnboxObject,
+    UnboxIter,
+    UnboxFunction,
+    UnboxNFunction,
 
+    // box operation, used for box lowering
+    BoxLoadTypeI64,
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //                             Guard
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //
+    // Guard, used to generate assertion during the runtime. Most guard are just
+    // type guard, which assert a value's type and bailout from optimization if
+    // guard assertion failed. Apart from the current type guard, we can
+    // optionally have other guard special guard for certain usage, like:
+    //
+    //    guard_not_zero
+    //    guard_false
+    //    guard_true
+    //
+    //  These value guards are used to emit certain usage during lowering. A
+    //  guard is essentially a If tests + a trap node. The trap node will be
+    //  just jump to the related deoptimization point for bailing out from
+    //  JIT frame back to interp frame
+    //
+    // 1. Type Guards
+    GuardInt, // notes we can only guard a main type, sub type is unknown since
+    // boxing value doesn't generate detail sub type for now
+    GuardReal,
+    GuardBoolean,
+    GuardNull,
+
+    // Heap object
+    GuardHeap,
+
+    // All heap allocated object
+    GuardStr,
+    GuardList,
+    GuardObject,
+    GuardFunction,
+    GuardNFunction,
+    GuardIter,
+
+    // 2. Value guard
+    GuardTrue,
+    GuardFalse,
+    GuardI64NotZero,
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //                               Phis
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //
     // high level, dealing with boxing value and all the script semantic, all
     // the instruction prefixed with Rv, stands for Rust value, which means the
     // boxed value.
@@ -225,6 +397,12 @@ pub enum Opcode {
     // Represent the function input arguments,
     RvParam,
 
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //                       Rv instruction, ie HIR
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //
     // Rust value arithmetic value, both sides must be a boxed value,
     RvAdd,
     RvSub,
@@ -246,10 +424,8 @@ pub enum Opcode {
     RvNot,
     RvNeg,
 
-    // Logic helper, the original And/Or/Ternary does too much things, we will
-    // lower them into an expression/artihmetic operator + control flow opeartor
-    RvAnd,
-    RvOr,
+    RvToString,
+    RvToBoolean,
 
     // Literal constant loading, notes, the value been loaded is a boxed value
     RvLoadInt,
@@ -284,7 +460,7 @@ pub enum Opcode {
     RvLoadUpvalue,
     RvSetUpvalue,
 
-    // Indexing/Dot, memory operation, generate side effect and should be used
+    // Indexing/Dot, memory operation, generates side effect and should be used
     // with alias analysis
     RvMemIndexLoad,
     RvMemIndexStore,
@@ -299,46 +475,124 @@ pub enum Opcode {
     RvSizeof,
     RvHalt,
 
-    // Conversion, hidden operation hide inside of the interpreter(semantic)
-    RvToString,
-    RvToBoolean,
+    // Invoke
+    RvCall,
 
-    // none arch, after aggressive type inference or speculative instruction
-    // mostly bound to a fixed width machine word operation. All the instruction
-    // prefixed with Fw, which stands for fixed width.
+    // =========================================================================
+    // Mid tier instructions
+    //
+    //   which is static typed and also directly handle unboxed value. Any
+    //   instruction requires the operand to be explicit unboxed via Unbox value
+    //   and mostly must be guarded with type guards
+    //
+    //
+    // For simplicity, these instructions are not prefixed with any naming tag
+    //
+    // =========================================================================
 
-    // low level, ie nearly 1to2 assembly translation. All the instruction prefix
-    // with M, which stands for machine.
+    // Typed arithmetic
+    I64Add,
+    F64Add,
 
-    // Comparison related, ie forming the basic block as following :
-    #[rustfmt::skip]
-		/*
+    I64Sub,
+    F64Sub,
 
-							+-------+
-							| IfCmp |
-						+-+-------+-+
-						|           |
-						|           |
-				+---v--+    +---v---+
-				| Blk  |    |  Blk  |
-				+------+    +-------+
-							 |    |
-							 |    |
-							+v----v-+
-							|  Blk  |
-							+-------+
-		*/
+    I64Mul,
+    F64Mul,
+
+    I64Div,
+    F64Div,
+
+    I64Mod,
+    F64Mod,
+
+    I64Pow,
+    F64Pow,
+
+    // Typed comparison
+    I64Eq,
+    I64Ne,
+    I64Lt,
+    I64Le,
+    I64Gt,
+    I64Ge,
+
+    F64Eq,
+    F64Ne,
+    F64Lt,
+    F64Le,
+    F64Gt,
+    F64Ge,
+
+    // Pointer comparison, required the previous unbox result in pointer types
+    //
+    //   UnboxStr
+    //   UnboxList
+    //   UnboxObject
+    //   UnboxFunction
+    //   UnboxNFunction
+    //   UnboxIter
+    //
+    PtrEq,
+    PtrNe,
+
+    // Boolean type, only worked here for boolean types, other types are not
+    // allowed here.
+    BooleanEq,
+    BooleanNe,
+
+    // Just testify whether the lhs/rhs are both null or not
+    NullEq,
+    NullNe,
+
+    // String comparison types, specifically designed for string's
+    //  They can provide extra lower hint when compiler find it is capable o
+    //  performing fancy optimization internally
+    StrEq,
+    StrNe,
+    StrLt,
+    StrLe,
+    StrGt,
+    StrGe,
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // Unary helpers
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // ToBoolean
+    I64ToBoolean,
+    F64ToBoolean,
+    StrToBoolean,
+    ListToBoolean,
+    ObjectToBoolean,
+    IterToBoolean,
+
+    // Function/NFunction all goes to false, Null flase, boolean is the value
+    // itself.
+    // Not operator
+    I64Negate,
+    F64Negate,
+
+    FlipBoolean,
+
+    // Builtin function calls, accepts a builtin call numbers and then use a addr
+    // book to perform the call. The builtin call are just normal calls
+    CallBuiltin0,
+    CallBuiltin1,
+    CallBuiltin2,
+    CallBuiltin3,
+    CallBuiltin4,
+
+    // -------------------------------------------------------------------------
+    // Control Flow Graph Node
+    // -------------------------------------------------------------------------
     CfgStart,
     CfgEnd,
 
     CfgMergeReturn,
     CfgMergeHalt,
 
-    /*
-    CfgMergeAssert,
-    CfgMergeDeopt,
-    CfgMergeBug,
-    */
     // generall block
     CfgHalt,
     CfgReturn,
@@ -403,6 +657,9 @@ pub struct Mpool {
     op_imm_i16: Oref,
     op_imm_i8: Oref,
     op_imm_f64: Oref,
+    op_imm_bool: Oref,
+    op_imm_null: Oref,
+    op_imm_string: Oref,
 
     op_box_i64: Oref,
     op_box_i32: Oref,
@@ -412,21 +669,53 @@ pub struct Mpool {
     op_box_u16: Oref,
     op_box_u8: Oref,
     op_box_f64: Oref,
+
+    op_box_boolean: Oref,
     op_box_true: Oref,
     op_box_false: Oref,
+
     op_box_null: Oref,
+    op_box_str: Oref,
+    op_box_list: Oref,
+    op_box_object: Oref,
+    op_box_iter: Oref,
+    op_box_function: Oref,
+    op_box_nfunction: Oref,
 
     op_unbox_i64: Oref,
-    op_unbox_i32: Oref,
-    op_unbox_i16: Oref,
-    op_unbox_i8: Oref,
-    op_unbox_u32: Oref,
-    op_unbox_u16: Oref,
-    op_unbox_u8: Oref,
     op_unbox_f64: Oref,
-    op_unbox_true: Oref,
-    op_unbox_false: Oref,
+    op_unbox_boolean: Oref,
     op_unbox_null: Oref,
+
+    op_unbox_str: Oref,
+    op_unbox_list: Oref,
+    op_unbox_object: Oref,
+    op_unbox_iter: Oref,
+    op_unbox_function: Oref,
+    op_unbox_nfunction: Oref,
+
+    // boxing operation
+    op_box_load_type_i64: Oref, // loading the type flag into i64 value
+
+    // (((((((((((((((((((((( GUARD ))))))))))))))))))))))
+    op_guard_int: Oref,
+    op_guard_real: Oref,
+    op_guard_boolean: Oref,
+    op_guard_null: Oref,
+
+    // heap object
+    op_guard_heap: Oref,
+    op_guard_str: Oref,
+    op_guard_list: Oref,
+    op_guard_object: Oref,
+    op_guard_function: Oref,
+    op_guard_nfunction: Oref,
+    op_guard_iter: Oref,
+
+    // value guards
+    op_guard_true: Oref,
+    op_guard_false: Oref,
+    op_guard_i64_not_zero: Oref,
 
     // (((((((((((((((((((((( PLACEHOLDER ))))))))))))))))))))))
     op_placeholder: Oref,
@@ -455,9 +744,6 @@ pub struct Mpool {
 
     op_rv_not: Oref,
     op_rv_neg: Oref,
-
-    op_rv_and: Oref,
-    op_rv_or: Oref,
 
     op_rv_load_int: Oref,
     op_rv_load_real: Oref,
@@ -504,6 +790,60 @@ pub struct Mpool {
     op_rv_param: Oref,
 
     // -------------------------------------------------------------------------
+    // (((((((((((((((((((((( Mid Tier ))))))))))))))))))))))
+    op_i64_add: Oref,
+    op_i64_sub: Oref,
+    op_i64_mul: Oref,
+    op_i64_div: Oref,
+    op_i64_mod: Oref,
+    op_i64_pow: Oref,
+
+    op_f64_add: Oref,
+    op_f64_sub: Oref,
+    op_f64_mul: Oref,
+    op_f64_div: Oref,
+    op_f64_mod: Oref,
+    op_f64_pow: Oref,
+
+    op_i64_eq: Oref,
+    op_i64_ne: Oref,
+    op_i64_lt: Oref,
+    op_i64_le: Oref,
+    op_i64_gt: Oref,
+    op_i64_ge: Oref,
+
+    op_f64_eq: Oref,
+    op_f64_ne: Oref,
+    op_f64_lt: Oref,
+    op_f64_le: Oref,
+    op_f64_gt: Oref,
+    op_f64_ge: Oref,
+
+    op_ptr_eq: Oref,
+    op_ptr_ne: Oref,
+
+    op_boolean_eq: Oref,
+    op_boolean_ne: Oref,
+
+    op_str_eq: Oref,
+    op_str_ne: Oref,
+    op_str_le: Oref,
+    op_str_lt: Oref,
+    op_str_ge: Oref,
+    op_str_gt: Oref,
+
+    op_i64_to_boolean: Oref,
+    op_f64_to_boolean: Oref,
+    op_str_to_boolean: Oref,
+    op_list_to_boolean: Oref,
+    op_object_to_boolean: Oref,
+    op_iter_to_boolean: Oref,
+
+    op_f64_negate: Oref,
+    op_i64_negate: Oref,
+    op_flip_boolean: Oref,
+
+    // -------------------------------------------------------------------------
     // (((((((((((((((((((((( CFG node ))))))))))))))))))))))
     op_cfg_start: Oref,
     op_cfg_end: Oref,
@@ -545,6 +885,68 @@ pub struct JFunc {
 
     // rpo order
     rpo: BBList,
+}
+
+impl JType {
+    pub fn new_unknown() -> JType {
+        JType {
+            main: MainType::Unknown,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn map_ftype(f: &FType) -> JType {
+        return match f {
+            FType::Int => JType {
+                main: MainType::Int,
+                sub: SubType::I64,
+            },
+            FType::Real => JType {
+                main: MainType::Real,
+                sub: SubType::F64,
+            },
+            FType::Boolean => JType {
+                main: MainType::Boolean,
+                sub: SubType::Invalid,
+            },
+            FType::Null => JType {
+                main: MainType::Null,
+                sub: SubType::Invalid,
+            },
+            FType::Str => JType {
+                main: MainType::Str,
+                sub: SubType::Invalid,
+            },
+            FType::List => JType {
+                main: MainType::List,
+                sub: SubType::Invalid,
+            },
+            FType::Object => JType {
+                main: MainType::Object,
+                sub: SubType::Invalid,
+            },
+            FType::Function => JType {
+                main: MainType::Function,
+                sub: SubType::Invalid,
+            },
+            FType::NFunction => JType {
+                main: MainType::NFunction,
+                sub: SubType::Invalid,
+            },
+            FType::Iter => JType {
+                main: MainType::Iter,
+                sub: SubType::Invalid,
+            },
+            FType::Unknown => JType {
+                main: MainType::Unknown,
+                sub: SubType::Invalid,
+            },
+        };
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        return self.main == MainType::Unknown;
+    }
 }
 
 impl Reclaim for Node {
@@ -789,6 +1191,11 @@ impl Node {
         }
     }
 
+    pub fn replace_and_dispose(x: &mut Nref, y: Nref) {
+        Node::replace(x, y);
+        x.borrow_mut().mark_dead();
+    }
+
     pub fn remove_phi_value(x: &mut Nref, i: usize) {
         debug_assert!(x.borrow().is_phi());
         Node::remove_value(x, i);
@@ -812,7 +1219,7 @@ impl Node {
         return i;
     }
 
-    pub fn simplify_phi(x: &mut Nref) {
+    pub fn simplify_phi(x: &mut Nref) -> bool {
         debug_assert!(x.borrow().is_phi());
 
         // (0) check wether the phi has placeholder, if so just remove the
@@ -844,7 +1251,9 @@ impl Node {
             debug_assert!(x.borrow().cfg.len() == 1);
             let v = x.borrow().value[0].clone();
             Node::replace(x, v);
+            return true;
         }
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -861,7 +1270,8 @@ impl Node {
             id: id,
             bc: bcid,
             alias: Option::None,
-            jtype: Option::None,
+            the_type: JType::new_unknown(),
+            type_hint: MainType::Unknown,
             dead: false,
         }));
     }
@@ -877,7 +1287,8 @@ impl Node {
             id: id,
             bc: bcid,
             alias: Option::None,
-            jtype: Option::None,
+            the_type: JType::new_unknown(),
+            type_hint: MainType::Unknown,
             dead: false,
         }));
     }
@@ -910,6 +1321,21 @@ impl Node {
         return n;
     }
 
+    pub fn lhs(&self) -> Nref {
+        debug_assert!(self.is_value_binary());
+        return self.value[0].clone();
+    }
+
+    pub fn rhs(&self) -> Nref {
+        debug_assert!(self.is_value_binary());
+        return self.value[1].clone();
+    }
+
+    pub fn una(&self) -> Nref {
+        debug_assert!(self.is_value_unary());
+        return self.value[0].clone();
+    }
+
     // ------------------------------------------------------------------------
     // Convinient methods
     pub fn is_cfg(&self) -> bool {
@@ -921,6 +1347,14 @@ impl Node {
     pub fn is_value(&self) -> bool {
         return Op::is_value(&self.op);
     }
+
+    pub fn is_value_binary(&self) -> bool {
+        return self.is_value() && self.value.len() == 2;
+    }
+    pub fn is_value_unary(&self) -> bool {
+        return self.is_value() && self.value.len() == 1;
+    }
+
     pub fn mark_dead(&mut self) {
         self.dead = true;
     }
@@ -980,6 +1414,7 @@ impl Op {
 
     fn is_value(x: &Oref) -> bool {
         return x.tier == OpTier::Bval
+            || x.tier == OpTier::Guard
             || x.tier == OpTier::Phi
             || x.tier == OpTier::Rval
             || x.tier == OpTier::Mid
@@ -1125,6 +1560,15 @@ impl Op {
     fn imm_f64() -> Oref {
         Oref::new(Op::new_imm("imm_f64", Opcode::ImmF64))
     }
+    fn imm_bool() -> Oref {
+        Oref::new(Op::new_imm("imm_bool", Opcode::ImmBool))
+    }
+    fn imm_null() -> Oref {
+        Oref::new(Op::new_imm("imm_null", Opcode::ImmNull))
+    }
+    fn imm_string() -> Oref {
+        Oref::new(Op::new_imm("imm_string", Opcode::ImmString))
+    }
 
     fn box_i64() -> Oref {
         Oref::new(Op::new_unary(
@@ -1200,6 +1644,7 @@ impl Op {
             MachineFlag {},
         ))
     }
+
     fn box_f64() -> Oref {
         Oref::new(Op::new_unary(
             "box_f64",
@@ -1210,6 +1655,18 @@ impl Op {
             MachineFlag {},
         ))
     }
+
+    fn box_boolean() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_boolean",
+            OpTier::Bval,
+            Opcode::BoxBoolean,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
     fn box_true() -> Oref {
         Oref::new(Op::new_unary(
             "box_true",
@@ -1220,6 +1677,7 @@ impl Op {
             MachineFlag {},
         ))
     }
+
     fn box_false() -> Oref {
         Oref::new(Op::new_unary(
             "box_false",
@@ -1230,11 +1688,78 @@ impl Op {
             MachineFlag {},
         ))
     }
+
     fn box_null() -> Oref {
         Oref::new(Op::new_unary(
             "box_null",
             OpTier::Bval,
             Opcode::BoxNull,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_str() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_str",
+            OpTier::Bval,
+            Opcode::BoxStr,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_list() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_list",
+            OpTier::Bval,
+            Opcode::BoxList,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_object() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_object",
+            OpTier::Bval,
+            Opcode::BoxObject,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_iter() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_iter",
+            OpTier::Bval,
+            Opcode::BoxIter,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_function() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_function",
+            OpTier::Bval,
+            Opcode::BoxFunction,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_nfunction() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_nfunction",
+            OpTier::Bval,
+            Opcode::BoxNFunction,
             false,
             false,
             MachineFlag {},
@@ -1252,70 +1777,6 @@ impl Op {
         ))
     }
 
-    fn unbox_i32() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_i32",
-            OpTier::Bval,
-            Opcode::UnboxI32,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
-
-    fn unbox_i16() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_i16",
-            OpTier::Bval,
-            Opcode::UnboxI16,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
-
-    fn unbox_i8() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_i8",
-            OpTier::Bval,
-            Opcode::UnboxI8,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
-
-    fn unbox_u32() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_u32",
-            OpTier::Bval,
-            Opcode::UnboxU32,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
-
-    fn unbox_u16() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_u16",
-            OpTier::Bval,
-            Opcode::UnboxU16,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
-    fn unbox_u8() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_u8",
-            OpTier::Bval,
-            Opcode::UnboxU8,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
     fn unbox_f64() -> Oref {
         Oref::new(Op::new_unary(
             "unbox_f64",
@@ -1326,26 +1787,18 @@ impl Op {
             MachineFlag {},
         ))
     }
-    fn unbox_true() -> Oref {
+
+    fn unbox_boolean() -> Oref {
         Oref::new(Op::new_unary(
-            "unbox_true",
+            "unbox_boolean",
             OpTier::Bval,
-            Opcode::UnboxTrue,
+            Opcode::UnboxBoolean,
             false,
             false,
             MachineFlag {},
         ))
     }
-    fn unbox_false() -> Oref {
-        Oref::new(Op::new_unary(
-            "unbox_false",
-            OpTier::Bval,
-            Opcode::UnboxFalse,
-            false,
-            false,
-            MachineFlag {},
-        ))
-    }
+
     fn unbox_null() -> Oref {
         Oref::new(Op::new_unary(
             "unbox_null",
@@ -1356,6 +1809,241 @@ impl Op {
             MachineFlag {},
         ))
     }
+
+    fn unbox_str() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_str",
+            OpTier::Bval,
+            Opcode::UnboxStr,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn unbox_list() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_list",
+            OpTier::Bval,
+            Opcode::UnboxList,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn unbox_object() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_object",
+            OpTier::Bval,
+            Opcode::UnboxObject,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn unbox_iter() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_iter",
+            OpTier::Bval,
+            Opcode::UnboxIter,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn unbox_function() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_function",
+            OpTier::Bval,
+            Opcode::UnboxFunction,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn unbox_nfunction() -> Oref {
+        Oref::new(Op::new_unary(
+            "unbox_nfunction",
+            OpTier::Bval,
+            Opcode::UnboxNFunction,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn box_load_type_i64() -> Oref {
+        Oref::new(Op::new_unary(
+            "box_load_type_i64",
+            OpTier::Bval,
+            Opcode::BoxLoadTypeI64,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    // =============================================================
+    // (((Guard)))
+    // =============================================================
+    fn guard_int() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_int",
+            OpTier::Guard,
+            Opcode::GuardInt,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_real() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_real",
+            OpTier::Guard,
+            Opcode::GuardReal,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_boolean() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_boolean",
+            OpTier::Guard,
+            Opcode::GuardBoolean,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_null() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_null",
+            OpTier::Guard,
+            Opcode::GuardNull,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_heap() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_heap",
+            OpTier::Guard,
+            Opcode::GuardHeap,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_str() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_str",
+            OpTier::Guard,
+            Opcode::GuardStr,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_list() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_list",
+            OpTier::Guard,
+            Opcode::GuardList,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_object() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_object",
+            OpTier::Guard,
+            Opcode::GuardObject,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_function() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_function",
+            OpTier::Guard,
+            Opcode::GuardFunction,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_nfunction() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_nfunction",
+            OpTier::Guard,
+            Opcode::GuardNFunction,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_iter() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_iter",
+            OpTier::Guard,
+            Opcode::GuardIter,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_true() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_true",
+            OpTier::Guard,
+            Opcode::GuardTrue,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_false() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_false",
+            OpTier::Guard,
+            Opcode::GuardFalse,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
+    fn guard_i64_not_zero() -> Oref {
+        Oref::new(Op::new_unary(
+            "guard_i64_not_zero",
+            OpTier::Guard,
+            Opcode::GuardI64NotZero,
+            false,
+            false,
+            MachineFlag {},
+        ))
+    }
+
     // =============================================================
     // (((Placeholder)))
     // =============================================================
@@ -1451,13 +2139,6 @@ impl Op {
     }
     fn rv_ne() -> Oref {
         Oref::new(Op::new_rv_binary("rv_ne", Opcode::RvNe))
-    }
-
-    fn rv_and() -> Oref {
-        Oref::new(Op::new_rv_binary("rv_and", Opcode::RvAnd))
-    }
-    fn rv_or() -> Oref {
-        Oref::new(Op::new_rv_binary("rv_or", Opcode::RvOr))
     }
 
     fn rv_not() -> Oref {
@@ -1808,6 +2489,527 @@ impl Op {
     //                          Control Flow Graph
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
+    fn i64_add() -> Oref {
+        Oref::new(Op::new(
+            "i64_add",
+            OpTier::Mid,
+            Opcode::I64Add,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_sub() -> Oref {
+        Oref::new(Op::new(
+            "i64_sub",
+            OpTier::Mid,
+            Opcode::I64Sub,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_mul() -> Oref {
+        Oref::new(Op::new(
+            "i64_sub",
+            OpTier::Mid,
+            Opcode::I64Mul,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_div() -> Oref {
+        Oref::new(Op::new(
+            "i64_div",
+            OpTier::Mid,
+            Opcode::I64Div,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_pow() -> Oref {
+        Oref::new(Op::new(
+            "i64_pow",
+            OpTier::Mid,
+            Opcode::I64Pow,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_mod() -> Oref {
+        Oref::new(Op::new(
+            "i64_mod",
+            OpTier::Mid,
+            Opcode::I64Mod,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_add() -> Oref {
+        Oref::new(Op::new(
+            "f64_add",
+            OpTier::Mid,
+            Opcode::F64Add,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_sub() -> Oref {
+        Oref::new(Op::new(
+            "f64_sub",
+            OpTier::Mid,
+            Opcode::F64Sub,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_mul() -> Oref {
+        Oref::new(Op::new(
+            "f64_sub",
+            OpTier::Mid,
+            Opcode::F64Mul,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_div() -> Oref {
+        Oref::new(Op::new(
+            "f64_div",
+            OpTier::Mid,
+            Opcode::F64Div,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_pow() -> Oref {
+        Oref::new(Op::new(
+            "f64_pow",
+            OpTier::Mid,
+            Opcode::F64Pow,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_mod() -> Oref {
+        Oref::new(Op::new(
+            "f64_mod",
+            OpTier::Mid,
+            Opcode::F64Mod,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_eq() -> Oref {
+        Oref::new(Op::new(
+            "i64_eq",
+            OpTier::Mid,
+            Opcode::I64Eq,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_ne() -> Oref {
+        Oref::new(Op::new(
+            "i64_ne",
+            OpTier::Mid,
+            Opcode::I64Ne,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_lt() -> Oref {
+        Oref::new(Op::new(
+            "i64_lt",
+            OpTier::Mid,
+            Opcode::I64Lt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_le() -> Oref {
+        Oref::new(Op::new(
+            "i64_le",
+            OpTier::Mid,
+            Opcode::I64Le,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_gt() -> Oref {
+        Oref::new(Op::new(
+            "i64_gt",
+            OpTier::Mid,
+            Opcode::I64Gt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_ge() -> Oref {
+        Oref::new(Op::new(
+            "i64_ge",
+            OpTier::Mid,
+            Opcode::I64Ge,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_eq() -> Oref {
+        Oref::new(Op::new(
+            "f64_eq",
+            OpTier::Mid,
+            Opcode::F64Eq,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_ne() -> Oref {
+        Oref::new(Op::new(
+            "f64_ne",
+            OpTier::Mid,
+            Opcode::F64Ne,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_lt() -> Oref {
+        Oref::new(Op::new(
+            "f64_lt",
+            OpTier::Mid,
+            Opcode::F64Lt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_le() -> Oref {
+        Oref::new(Op::new(
+            "f64_le",
+            OpTier::Mid,
+            Opcode::F64Le,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_gt() -> Oref {
+        Oref::new(Op::new(
+            "f64_gt",
+            OpTier::Mid,
+            Opcode::F64Gt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_ge() -> Oref {
+        Oref::new(Op::new(
+            "f64_ge",
+            OpTier::Mid,
+            Opcode::F64Ge,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_eq() -> Oref {
+        Oref::new(Op::new(
+            "str_eq",
+            OpTier::Mid,
+            Opcode::StrEq,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_ne() -> Oref {
+        Oref::new(Op::new(
+            "str_ne",
+            OpTier::Mid,
+            Opcode::StrNe,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_lt() -> Oref {
+        Oref::new(Op::new(
+            "str_lt",
+            OpTier::Mid,
+            Opcode::StrLt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_le() -> Oref {
+        Oref::new(Op::new(
+            "str_le",
+            OpTier::Mid,
+            Opcode::StrLe,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_gt() -> Oref {
+        Oref::new(Op::new(
+            "str_gt",
+            OpTier::Mid,
+            Opcode::StrGt,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_ge() -> Oref {
+        Oref::new(Op::new(
+            "str_ge",
+            OpTier::Mid,
+            Opcode::StrGe,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn ptr_eq() -> Oref {
+        Oref::new(Op::new(
+            "ptr_eq",
+            OpTier::Mid,
+            Opcode::PtrEq,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn ptr_ne() -> Oref {
+        Oref::new(Op::new(
+            "ptr_ne",
+            OpTier::Mid,
+            Opcode::PtrNe,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn boolean_eq() -> Oref {
+        Oref::new(Op::new(
+            "boolean_eq",
+            OpTier::Mid,
+            Opcode::BooleanEq,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn boolean_ne() -> Oref {
+        Oref::new(Op::new(
+            "boolean_ne",
+            OpTier::Mid,
+            Opcode::BooleanNe,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "i64_to_boolean",
+            OpTier::Mid,
+            Opcode::I64ToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "f64_to_boolean",
+            OpTier::Mid,
+            Opcode::F64ToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn str_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "str_to_boolean",
+            OpTier::Mid,
+            Opcode::StrToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn list_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "list_to_boolean",
+            OpTier::Mid,
+            Opcode::ListToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn object_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "object_to_boolean",
+            OpTier::Mid,
+            Opcode::ObjectToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn iter_to_boolean() -> Oref {
+        Oref::new(Op::new(
+            "iter_to_boolean",
+            OpTier::Mid,
+            Opcode::IterToBoolean,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn f64_negate() -> Oref {
+        Oref::new(Op::new(
+            "f64_negate",
+            OpTier::Mid,
+            Opcode::F64Negate,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn i64_negate() -> Oref {
+        Oref::new(Op::new(
+            "i64_negate",
+            OpTier::Mid,
+            Opcode::I64Negate,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag {},
+        ))
+    }
+
+    fn flip_boolean() -> Oref {
+        Oref::new(Op::new(
+            "flip_boolean",
+            OpTier::Mid,
+            Opcode::FlipBoolean,
+            false,
+            false,
+            ParamLimits::Limit(1),
+            MachineFlag {},
+        ))
+    }
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //                          Control Flow Graph
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     fn cfg_start() -> Oref {
         Oref::new(Op::new(
             "cfg_start",
@@ -1934,6 +3136,9 @@ impl Mpool {
             op_imm_i16: Op::imm_i16(),
             op_imm_i8: Op::imm_i8(),
             op_imm_f64: Op::imm_f64(),
+            op_imm_bool: Op::imm_bool(),
+            op_imm_null: Op::imm_null(),
+            op_imm_string: Op::imm_string(),
 
             op_box_i64: Op::box_i64(),
             op_box_i32: Op::box_i32(),
@@ -1943,21 +3148,51 @@ impl Mpool {
             op_box_u16: Op::box_u16(),
             op_box_u8: Op::box_u8(),
             op_box_f64: Op::box_f64(),
+
+            op_box_boolean: Op::box_boolean(),
             op_box_true: Op::box_true(),
             op_box_false: Op::box_false(),
+
             op_box_null: Op::box_null(),
 
+            op_box_str: Op::box_str(),
+            op_box_list: Op::box_list(),
+            op_box_object: Op::box_object(),
+            op_box_iter: Op::box_iter(),
+            op_box_function: Op::box_function(),
+            op_box_nfunction: Op::box_nfunction(),
+
             op_unbox_i64: Op::unbox_i64(),
-            op_unbox_i32: Op::unbox_i32(),
-            op_unbox_i16: Op::unbox_i16(),
-            op_unbox_i8: Op::unbox_i8(),
-            op_unbox_u32: Op::unbox_u32(),
-            op_unbox_u16: Op::unbox_u16(),
-            op_unbox_u8: Op::unbox_u8(),
             op_unbox_f64: Op::unbox_f64(),
-            op_unbox_true: Op::unbox_true(),
-            op_unbox_false: Op::unbox_false(),
+            op_unbox_boolean: Op::unbox_boolean(),
             op_unbox_null: Op::unbox_null(),
+
+            op_unbox_str: Op::unbox_str(),
+            op_unbox_list: Op::unbox_list(),
+            op_unbox_object: Op::unbox_object(),
+            op_unbox_iter: Op::unbox_iter(),
+            op_unbox_function: Op::unbox_function(),
+            op_unbox_nfunction: Op::unbox_nfunction(),
+
+            op_box_load_type_i64: Op::box_load_type_i64(),
+
+            // Guard
+            op_guard_int: Op::guard_int(),
+            op_guard_real: Op::guard_real(),
+            op_guard_boolean: Op::guard_boolean(),
+            op_guard_null: Op::guard_null(),
+
+            op_guard_heap: Op::guard_heap(),
+            op_guard_str: Op::guard_str(),
+            op_guard_list: Op::guard_list(),
+            op_guard_object: Op::guard_object(),
+            op_guard_function: Op::guard_function(),
+            op_guard_nfunction: Op::guard_nfunction(),
+            op_guard_iter: Op::guard_iter(),
+
+            op_guard_true: Op::guard_true(),
+            op_guard_false: Op::guard_false(),
+            op_guard_i64_not_zero: Op::guard_i64_not_zero(),
 
             // Pesudo nodes
             op_placeholder: Op::placeholder(),
@@ -1986,9 +3221,6 @@ impl Mpool {
 
             op_rv_not: Op::rv_not(),
             op_rv_neg: Op::rv_neg(),
-
-            op_rv_and: Op::rv_and(),
-            op_rv_or: Op::rv_or(),
 
             op_rv_load_int: Op::rv_load_int(),
             op_rv_load_real: Op::rv_load_real(),
@@ -2031,7 +3263,60 @@ impl Mpool {
             op_rv_phi: Op::rv_phi(),
             op_rv_param: Op::rv_param(),
 
-            // CFG
+            // Mid
+            op_i64_add: Op::i64_add(),
+            op_i64_sub: Op::i64_sub(),
+            op_i64_mul: Op::i64_mul(),
+            op_i64_div: Op::i64_div(),
+            op_i64_mod: Op::i64_mod(),
+            op_i64_pow: Op::i64_pow(),
+
+            op_f64_add: Op::f64_add(),
+            op_f64_sub: Op::f64_sub(),
+            op_f64_mul: Op::f64_mul(),
+            op_f64_div: Op::f64_div(),
+            op_f64_mod: Op::f64_mod(),
+            op_f64_pow: Op::f64_pow(),
+
+            op_i64_eq: Op::i64_eq(),
+            op_i64_ne: Op::i64_ne(),
+            op_i64_lt: Op::i64_lt(),
+            op_i64_le: Op::i64_le(),
+            op_i64_gt: Op::i64_gt(),
+            op_i64_ge: Op::i64_ge(),
+
+            op_f64_eq: Op::f64_eq(),
+            op_f64_ne: Op::f64_ne(),
+            op_f64_lt: Op::f64_lt(),
+            op_f64_le: Op::f64_le(),
+            op_f64_gt: Op::f64_gt(),
+            op_f64_ge: Op::f64_ge(),
+
+            op_ptr_eq: Op::ptr_eq(),
+            op_ptr_ne: Op::ptr_ne(),
+
+            op_boolean_eq: Op::boolean_eq(),
+            op_boolean_ne: Op::boolean_ne(),
+
+            op_str_eq: Op::str_eq(),
+            op_str_ne: Op::str_ne(),
+            op_str_lt: Op::str_lt(),
+            op_str_le: Op::str_le(),
+            op_str_gt: Op::str_gt(),
+            op_str_ge: Op::str_ge(),
+
+            op_i64_to_boolean: Op::i64_to_boolean(),
+            op_f64_to_boolean: Op::f64_to_boolean(),
+            op_str_to_boolean: Op::str_to_boolean(),
+            op_list_to_boolean: Op::list_to_boolean(),
+            op_object_to_boolean: Op::object_to_boolean(),
+            op_iter_to_boolean: Op::iter_to_boolean(),
+
+            op_f64_negate: Op::f64_negate(),
+            op_i64_negate: Op::i64_negate(),
+            op_flip_boolean: Op::flip_boolean(),
+
+            // Control flow graph
             op_cfg_start: Op::cfg_start(),
             op_cfg_end: Op::cfg_end(),
             op_cfg_merge_return: Op::cfg_merge_return(),
@@ -2142,6 +3427,60 @@ impl Mpool {
             self.node_next_id(),
             bcpos,
             Imm::ImmI8(v),
+        );
+        self.watch_node(&x);
+        return x;
+    }
+    pub fn new_imm_f64(&mut self, v: f64, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_f64),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmF64(v),
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_imm_true(&mut self, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_bool),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmBool(true),
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_imm_false(&mut self, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_bool),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmBool(false),
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_imm_null(&mut self, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_null),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmNull,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_imm_string(&mut self, s: String, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_string),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmString(s),
         );
         self.watch_node(&x);
         return x;
@@ -2272,24 +3611,6 @@ impl Mpool {
     pub fn new_rv_gt(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
         return self.new_rv_node_binary(
             Oref::clone(&self.op_rv_gt),
-            lhs,
-            rhs,
-            bcpos,
-        );
-    }
-
-    pub fn new_rv_and(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
-        return self.new_rv_node_binary(
-            Oref::clone(&self.op_rv_and),
-            lhs,
-            rhs,
-            bcpos,
-        );
-    }
-
-    pub fn new_rv_or(&mut self, lhs: Nref, rhs: Nref, bcpos: BcCtx) -> Nref {
-        return self.new_rv_node_binary(
-            Oref::clone(&self.op_rv_or),
             lhs,
             rhs,
             bcpos,

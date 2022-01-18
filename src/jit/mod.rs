@@ -4,3 +4,6 @@ pub mod bbinfo;
 pub mod fbuilder;
 pub mod j;
 pub mod iter;
+pub mod pass;
+pub mod simplify;
+pub mod typer;

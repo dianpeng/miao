@@ -1,7 +1,7 @@
 // For each bytecode in the ProtoRc, we also have an additional information
-// called feedback for that bytecode, which is used to record the type information
-// observe during the runtime execution. This information is needed for us to
-// generate speculative optimization code.
+// called feedback for that bytecode, which is used to record the type
+// information observe during the runtime execution. This information is needed
+// for us to generate speculative optimization code.
 use crate::ic::ftype::*;
 
 // A saturated counter, ie it will not grow unboundly and will not make rust

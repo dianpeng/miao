@@ -506,7 +506,7 @@ impl BBInfoBuilder {
             let bytecode = self.bc_at(last_jump);
 
             self.out.bbinfo_list[bb_idx as usize].bc_to = last_jump;
-            self.out.bc_to_map_bbinfo[(last_jump + 1) as usize] =
+            self.out.bc_to_map_bbinfo[(last_jump) as usize] =
                 Option::Some(bb_idx);
 
             match bytecode {

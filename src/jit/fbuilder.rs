@@ -338,8 +338,9 @@ impl FBuilder {
                 while idx < v_len && idx < loop_iv_size {
                     if self.bbinfo_set.at(bbinfo_id).loop_iv_assignment[idx] {
                         let phi = Nref::clone(&new_env.borrow().stack[idx]);
-                        debug_assert!(phi.borrow().is_phi());
-                        new_env.borrow_mut().loop_iv.push((idx as u32, phi));
+                        if phi.borrow().is_phi() {
+                            new_env.borrow_mut().loop_iv.push((idx as u32, phi));
+                        }
                     }
                     idx += 1;
                 }
@@ -913,7 +914,7 @@ impl FBuilder {
             value,
             self.bc_ctx(bcpos),
         );
-        self.output_tos(stg);
+        self.check_effect_node(&stg);
         return true;
     }
 
@@ -1641,6 +1642,7 @@ mod fbuilder_tests {
         };
 
         let code_string = proto.code.dump();
+        println!("{}", code_string);
 
         // (1) creating the function object, since we don't have any runtime
         //     information, so just doing nothing at all here.
@@ -1707,10 +1709,12 @@ mod fbuilder_tests {
     fn basic() {
         do_print_code(
             r#"
-let x = a;
-for uuvv in x {
+            let i = 0;
+for y in xx {
+    i += 1;
+    if i > 100 { i = 1; break; }
 }
-return xx;
+return i;
 "#,
         );
 

@@ -64,9 +64,8 @@ impl RvLower {
     //  for each instruction. The guard_if_not_trap will turns into a control
     //  flow which allow deoptimization from the current frame back to the interp
     //  frame.
-    fn lower_builtin_call_pure(&self, call: Nref) -> Nref {
+    fn lower_builtin_call_pure(&self, call: Nref, bc: BcCtx) -> Nref {
         debug_assert!(call.borrow().is_builtin_call());
-        let bc = call.borrow().bc.clone();
         return self.mptr().new_guard_if_not_trap(call, bc);
     }
 
@@ -94,9 +93,12 @@ impl RvLower {
     // ------------------------------------------------------------------------
     // new a type guard of the input node n, and tries to convert it into the
     // output type T
-    fn new_guard(&mut self, n: Nref, hint: FType) -> Option<Nref> {
-        let bc_ctx = n.borrow().bc.clone();
-
+    fn new_guard(
+        &mut self,
+        n: Nref,
+        hint: FType,
+        bc_ctx: BcCtx,
+    ) -> Option<Nref> {
         // (0) check the hint type is available or not, if so, then generates
         //     the gaurd based on the hint
         match hint {
@@ -192,10 +194,8 @@ impl RvLower {
 
     // -------------------------------------------------------------------------
     // The input value n must be a typped value, ie with a guard
-    fn new_unbox_from_guard(&mut self, n: Nref) -> Nref {
+    fn new_unbox_from_guard(&mut self, n: Nref, bc: BcCtx) -> Nref {
         debug_assert!(n.borrow().is_guard_type());
-
-        let bc = n.borrow().bc.clone();
 
         match n.borrow().op.op {
             Opcode::GuardInt => {
@@ -235,9 +235,8 @@ impl RvLower {
 
     // new a boxed value from the unboxed value given. The Nref specified must be
     // an unboxed value, otherwise crashed.
-    fn new_box_value(&mut self, n: Nref) -> Nref {
+    fn new_box_value(&mut self, n: Nref, bc: BcCtx) -> Nref {
         debug_assert!(n.borrow().is_unbox_value());
-        let bc = n.borrow().bc.clone();
 
         match n.borrow().the_type.main {
             MainType::Int => {
@@ -277,9 +276,14 @@ impl RvLower {
     }
 
     // -------------------------------------------------------------------------
-    fn new_unbox_guard(&mut self, n: Nref, hint: FType) -> Option<Nref> {
-        if let Option::Some(nn) = self.new_guard(n, hint) {
-            return self.new_unbox_from_guard(n);
+    fn new_unbox_guard(
+        &mut self,
+        n: Nref,
+        hint: FType,
+        bc: BcCtx,
+    ) -> Option<Nref> {
+        if let Option::Some(nn) = self.new_guard(n, hint, bc.clone()) {
+            return self.new_unbox_from_guard(n, bc.clone());
         }
         return Option::None;
     }
@@ -568,6 +572,42 @@ impl RvLower {
 
         return Option::None;
     }
+
+    // ------------------------------------------------------------------------
+    // Unary operations
+    //
+    fn new_to_boolean(&mut self, v: Nref, bc: BcCtx) -> Nref {
+        debug_assert!(v.borrow().is_value());
+
+        match &v.borrow().the_type.main {
+            MainType::Int => {
+                return self.mptr().borrow_mut().new_i64_to_boolean(v, bc);
+            }
+            MainType::Real => {
+                return self.mptr().borrow_mut().new_f64_to_boolean(v, bc);
+            }
+            MainType::Str => {
+                return self.mptr().borrow_mut().new_str_to_boolean(v, bc);
+            }
+            MainType::List => {
+                return self.mptr().borrow_mut().new_list_to_boolean(v, bc);
+            }
+            MainType::Object => {
+                return self.mptr().borrow_mut().new_object_to_boolean(v, bc);
+            }
+            MainType::Iter => {
+                return self.mptr().borrow_mut().new_iter_to_boolean(v, bc);
+            }
+            MainType::Boolean => {
+                return v;
+            }
+            MainType::Null => {
+                return self.mptr().borrow_mut().new_imm_null(bc);
+            }
+        };
+    }
+
+    fn new_flip_boolean(&mut self, a: Nref) -> Nref {}
 }
 
 // -- ==========================================================================
@@ -606,14 +646,18 @@ impl RvArithmetciLower {
     fn try_lower_add_sub_mul_pow_with_feedback(&mut self, x: Nref) -> TryLowerR {
         debug_assert!(x.borrow().is_value_binary_arith());
 
+        let bc_ctx = x.bc.clone();
+
         let lhs = x.borrow().lhs();
         let rhs = x.borrow().rhs();
 
         let lhs_type = self.lower.lhs_type_hint(&x);
         let rhs_type = self.lower.rhs_type_hint(&x);
 
-        let unbox_lhs = self.lower.new_unbox_guard(lhs, lhs_type)?;
-        let unbox_rhs = self.lower.new_unbox_guard(rhs, rhs_type)?;
+        let unbox_lhs =
+            self.lower.new_unbox_guard(lhs, lhs_type, bc_ctx.clone())?;
+        let unbox_rhs =
+            self.lower.new_unbox_guard(rhs, rhs_type, bc_ctx.clone())?;
 
         let unbox_op = match x.borrow().op {
             Opcode::RvAdd => {
@@ -637,7 +681,7 @@ impl RvArithmetciLower {
             _ => unreachable!(),
         };
 
-        let box_val = self.lower.new_box_value(unbox_op);
+        let box_val = self.lower.new_box_value(unbox_op, bc_ctx.clone());
 
         Node::replace_and_dispose(&mut x, box_val);
         return Option::Some(());
@@ -645,6 +689,7 @@ impl RvArithmetciLower {
 
     fn try_lower_div_mod_with_feedback(&mut self, x: Nref) -> TryLowerR {
         debug_assert!(x.borrow().is_value_binary_arith());
+        let bc_ctx = x.borrow().bc.clone();
 
         let lhs = x.borrow().lhs();
         let rhs = x.borrow().rhs();
@@ -652,9 +697,10 @@ impl RvArithmetciLower {
         let lhs_type = self.lower.lhs_type_hint(&x);
         let rhs_type = self.lower.rhs_type_hint(&x);
 
-        let unbox_lhs = self.lower.new_unbox_guard(lhs, lhs_type)?;
-
-        let unbox_rhs = self.lower.new_unbox_guard(rhs, rhs_type)?;
+        let unbox_lhs =
+            self.lower.new_unbox_guard(lhs, lhs_type, bc_ctx.clone())?;
+        let unbox_rhs =
+            self.lower.new_unbox_guard(rhs, rhs_type, bc_ctx.clone())?;
 
         // generate code for checking whether rhs is zero or not.
         let checked_unbox_rhs = self.lower.new_guard_not_zero(unbox_rhs);
@@ -675,7 +721,7 @@ impl RvArithmetciLower {
             _ => unreachable!(),
         };
 
-        let box_val = self.lower.new_box_value(unbox_div);
+        let box_val = self.lower.new_box_value(unbox_div, bc_ctx.clone());
 
         Node::replace_and_dispose(&mut x, box_val);
         return Option::Some(());
@@ -762,6 +808,8 @@ impl RvComparisonLower {
     fn try_lower_with_feedback(&mut self, x: Nref) -> TryLowerR {
         debug_assert!(x.borrow().is_value_binary_arith());
 
+        let bc_ctx = x.borrow().bc.clone();
+
         let op_code = x.borrow().op.op.clone();
 
         let lhs = x.borrow().lhs();
@@ -769,8 +817,12 @@ impl RvComparisonLower {
         let lhs_type_hint = self.lower.lhs_type_hint(&lhs);
         let rhs_type_hint = self.lower.rhs_type_hint(&rhs);
 
-        let unbox_lhs = self.lower.new_unbox_guard(lhs, lhs_type_hint)?;
-        let unbox_rhs = self.lower.new_unbox_guard(rhs, rhs_type_hint)?;
+        let unbox_lhs =
+            self.lower
+                .new_unbox_guard(lhs, lhs_type_hint, bc_ctx.clone())?;
+        let unbox_rhs =
+            self.lower
+                .new_unbox_guard(rhs, rhs_type_hint, bc_ctx.clone())?;
 
         let unbox_cmp = match op_code {
             Opcode::RvEq => self.lower.new_unbox_cmp_eq(
@@ -810,7 +862,7 @@ impl RvComparisonLower {
             )?,
         };
 
-        let box_val = self.lower.new_box_value(unbox_cmp);
+        let box_val = self.lower.new_box_value(unbox_cmp, bc_ctx.clone());
 
         Node::replace_and_dispose(&mut x, box_val);
         return Option::Some(());
@@ -924,9 +976,15 @@ impl RvUnaryLower {
 
         let val = n.borrow().una();
         let val_feedback = self.lower.una_type_hint(&n);
-        let unboxed_val = self.lower.new_unbox_guard(val, val_feedback)?;
-        let to_boolean = self.lower.new_to_boolean(unboxed, n.bc.clone())?;
-        let boxed_val = self.lower.new_box_value(to_boolean);
+        let unboxed_val = self.lower.new_unbox_guard(
+            val,
+            val_feedback,
+            n.borrow().bc.clone(),
+        )?;
+        let to_boolean =
+            self.lower.new_to_boolean(unboxed, n.borrow().bc.clone())?;
+        let boxed_val =
+            self.lower.new_box_value(to_boolean, n.borrow().bc.clone());
 
         Node::replace_and_dispose(&mut n, boxed_val);
         return TryLowerR::Some(());
@@ -940,9 +998,15 @@ impl RvUnaryLower {
 
         let val = n.borrow().una();
         let val_feedback = self.lower.una_type_hint(&n);
-        let unboxed_val = self.lower.new_unbox_guard(val, val_feedback)?;
-        let negate_val = self.lower.new_negate(unboxed_val);
-        let boxed_val = self.lower.new_box_value(negate_val);
+        let unboxed_val = self.lower.new_unbox_guard(
+            val,
+            val_feedback,
+            n.borrow().bc.clone(),
+        )?;
+        let negate_val =
+            self.lower.new_negate(unboxed_val, n.borrow().bc.clone());
+        let boxed_val =
+            self.lower.new_box_value(negate_val, n.borrow().bc.clone());
 
         Node::replace_and_dispose(&mut n, boxed_val);
         return TryLowerR::Some(());
@@ -956,11 +1020,19 @@ impl RvUnaryLower {
 
         let val = n.borrow().una();
         let val_feedback = self.lower.una_type_hint(&n);
-        let unboxed_val = self.lower.new_unbox_guard(val, val_feedback)?;
-        let to_boolean = self.lower.new_to_boolean(unboxed, n.bc.clone())?;
-        let flip_boolean =
-            self.lower.new_flip_boolean(to_boolean, n.bc.clone())?;
-        let boxed_val = self.lower.new_box_value(flip_boolean);
+        let unboxed_val = self.lower.new_unbox_guard(
+            val,
+            val_feedback,
+            n.borrow().bc.clone(),
+        )?;
+        let to_boolean =
+            self.lower.new_to_boolean(unboxed, n.borrow().bc.clone())?;
+        let flip_boolean = self
+            .lower
+            .new_flip_boolean(to_boolean, n.borrow().bc.clone())?;
+        let boxed_val = self
+            .lower
+            .new_box_value(flip_boolean, n.borrow().bc.clone());
 
         Node::replace_and_dispose(&mut n, boxed_val);
         return TryLowerR::Some(());

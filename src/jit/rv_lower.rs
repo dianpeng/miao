@@ -64,7 +64,7 @@ impl RvLower {
     //  for each instruction. The guard_if_not_trap will turns into a control
     //  flow which allow deoptimization from the current frame back to the interp
     //  frame.
-    fn lower_builtin_call_pure(&self, call: Nref, bc: BcCtx) -> Nref {
+    fn new_builtin_call(&self, call: Nref, bc: BcCtx) -> Nref {
         debug_assert!(call.borrow().is_builtin_call());
         return self.mptr().new_guard_if_not_trap(call, bc);
     }
@@ -76,7 +76,7 @@ impl RvLower {
         call: BuiltinCall,
         bc: BcCtx,
     ) -> Nref {
-        let builtin_call = self.lower.do_builtin_call2(lhs, rhs, bc);
+        let builtin_call = self.lower.do_builtin_call2(call, lhs, rhs, bc);
         Node::replace_and_dispose(&mut x, builtin_call);
     }
 
@@ -86,7 +86,7 @@ impl RvLower {
         call: BuiltinCall,
         bc: BcCtx,
     ) -> Nref {
-        let builtin_call = self.lower.do_builtin_call1(x, bc);
+        let builtin_call = self.lower.do_builtin_call1(call, x, bc);
         Node::replace_and_dispose(&mut x, builtin_call);
     }
 
@@ -233,6 +233,45 @@ impl RvLower {
         };
     }
 
+    fn new_unbox_from_trap(&mut self, n: Nref, bc: BcCtx) -> Nref {
+        debug_assert!(n.borrow().is_trap_type());
+
+        match n.borrow().op.op {
+            Opcode::TrapInt => {
+                return self.mptr().borrow_mut().new_unbox_i64(n, bc);
+            }
+            Opcode::TrapReal => {
+                return self.mptr().borrow_mut().new_unbox_f64(n, bc);
+            }
+            Opcode::TrapBoolean => {
+                return self.mptr().borrow_mut().new_unbox_boolean(n, bc);
+            }
+            Opcode::TrapNull => {
+                return self.mptr().borrow_mut().new_unbox_null(n, bc);
+            }
+            Opcode::TrapStr => {
+                return self.mptr().borrow_mut().new_unbox_str(n, bc);
+            }
+            Opcode::TrapList => {
+                return self.mptr().borrow_mut().new_unbox_list(n, bc);
+            }
+            Opcode::TrapObject => {
+                return self.mptr().borrow_mut().new_unbox_object(n, bc);
+            }
+            Opcode::TrapFunction => {
+                return self.mptr().borrow_mut().new_unbox_function(n, bc);
+            }
+            Opcode::TrapNFunction => {
+                return self.mptr().borrow_mut().new_unbox_nfunction(n, bc);
+            }
+            Opcode::TrapIter => {
+                return self.mptr().borrow_mut().new_unbox_iter(n, bc);
+            }
+
+            _ => unreachable!(),
+        };
+    }
+
     // new a boxed value from the unboxed value given. The Nref specified must be
     // an unboxed value, otherwise crashed.
     fn new_box_value(&mut self, n: Nref, bc: BcCtx) -> Nref {
@@ -288,28 +327,185 @@ impl RvLower {
         return Option::None;
     }
 
+    fn new_unbox_trap(
+        &mut self,
+        n: Nref,
+        hint: FType,
+        bc: BcCtx,
+    ) -> OPtion<Nref> {
+        if let Option::Some(nn) = self.new_trap(n, hint, bc.clone()) {
+            return self.new_unbox_from_trap(n, bc.clone());
+        }
+        return Option::None;
+    }
+
     // ------------------------------------------------------------------------
-    // String operations
+    // String operations lower helper
     //
-    //   1) String concate
-    //     1.1) UnboxStrCon
+    //   The following string operation should be supported,
+    //
+    //   1) RvConStr
+    //      concate(lhs, rhs) -> output string. For now, this will be lowered
+    //      into a runtime call instead of anything else. In the future we can
+    //      optionally lower them into ConStr type if support dynamic string
+    //      representation
     //
     //   2) String comparison
     //
-    //     2.1) CmpStrEq
-    //     2.2) CmpStrNe
-    //     2.3) CmpStrLt
-    //     2.4) CmpStrLe
-    //     2.5) CmpStrGt
-    //     2.6) CmpStrGe
+    //      In this phase, the string comparison will just be named with certain
+    //      mid tier IR nodes, ie StrXXX nodes for GVN optimization. In the later
+    //      lowering phase, it will be lowered into inline loop to perform comp
+    //      which will help us a lot
+    //
+    fn new_str_eq(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_eq(lhs, rhs, bc);
+    }
 
-    fn new_str_opts_string_con(
-        &mut self,
-        lhs: Nref,
-        rhs: Nref,
-        bc: BcCtx,
-    ) -> Nref {
-        return self.mptr().borrow_mut().new_unbox_str_conn(lhs, rhs, bc);
+    fn new_str_ne(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_ne(lhs, rhs, bc);
+    }
+
+    fn new_str_le(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_le(lhs, rhs, bc);
+    }
+
+    fn new_str_lt(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_lt(lhs, rhs, bc);
+    }
+
+    fn new_str_ge(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_le(lhs, rhs, bc);
+    }
+
+    fn new_str_gt(&mut self, lhs: Nref, rhs: Nref, bc: BcCtx) -> Option<Nref> {
+        debug_assert!(lhs.borrow().the_type.is_str());
+        debug_assert!(rhs.borrow().the_type.is_str());
+        return self.mptr().borrow_mut().new_str_lt(lhs, rhs, bc);
+    }
+
+    // lowering the str_con instruction into builtin calls. The problem is that
+    // the str_con takes N-ry arguments which cannot be effectively translated
+    // into our builtin call since builtin call takes a fixed number of arguments
+    // in register for easier mapping to the arch
+    //
+    // To address this issue, we issue multiple calls to the str_con runtime
+    // call this is okay since mostly the str_con will not have too many arguments
+    fn lower_str_con(&mut self, con: &mut Nref, bc: BcCtx) -> Nref {
+        // the largest runtime call we can emit will have 4 arguments
+        // and we will have str con builtin call takes 2, 3, and 4 arguments
+        debug_assert!(con.borrow().op.op == Opcode::RvConStr);
+        let input_len = con.borrow().value.len() as u32;
+
+        let pre = {
+            if input_len <= 4 {
+                input_len
+            } else {
+                4
+            }
+        };
+
+        let loop_cnt = {
+            if input_len <= 4 {
+                0
+            } else {
+                // each loop the str_con will/can consume 3 input arguments with
+                // returned value from previous call
+                (input_len - 4) / 3
+            }
+        };
+
+        let tail = input_len - loop_cnt * 3;
+
+        debug_assert!(tail < 3);
+        debug_assert!(pre <= 4);
+
+        // (0) generate leading call
+        let mut con_result = {
+            match pre {
+                0 => {
+                    unreachable!();
+                }
+                1 => {
+                    return con.borrow().value[0].clone();
+                }
+                2 => self.mptr().do_builtin_call2(
+                    BuiltinCall::StringConcate2,
+                    con.borrow().value[0].clone(),
+                    con.borrow().value[1].clone(),
+                    bc.clone(),
+                ),
+                3 => self.mptr().do_builtin_call3(
+                    BuiltinCall::StringConcate3,
+                    con.borrow().value[0].clone(),
+                    con.borrow().value[1].clone(),
+                    con.borrow().value[2].clone(),
+                    bc.clone(),
+                ),
+                4 => self.mptr().do_builtin_call4(
+                    BuiltinCall::StringConcate4,
+                    con.borrow().value[0].clone(),
+                    con.borrow().value[1].clone(),
+                    con.borrow().value[4].clone(),
+                    bc.clone(),
+                ),
+                _ => {
+                    unreachable!();
+                }
+            };
+        };
+
+        // (1) generate nested looping call
+        let mut idx = pre;
+        {
+            for i in (0..loop_cnt).iter() {
+                let a0 = con_result;
+
+                con_result = self.do_builtin_call4(
+                    BuiltinCall::StringConcate4,
+                    a0,
+                    con.borrow().value[pre + 0].clone(),
+                    con.borrow().value[pre + 1].clone(),
+                    con.borrow().value[pre + 2].clone(),
+                    bc.clone(),
+                );
+
+                idx += 3;
+            }
+        }
+
+        // (2) tail generation if needed
+        match tail {
+            1 => {
+                let a0 = con_result;
+                con_result = self.do_builtin_call2(
+                    BuiltinCall::StringConcate2,
+                    a0,
+                    con.borrow().value[idx].clone(),
+                );
+            }
+            2 => {
+                let a0 = con_result;
+                con_result = self.do_builtin_call2(
+                    BuiltinCall::StringConcate3,
+                    a0,
+                    con.borrow().value[idx + 0].clone(),
+                    con.borrow().value[idx + 1].clone(),
+                );
+            }
+            _ => (),
+        };
+
+        return con_result;
     }
 
     // ------------------------------------------------------------------------
@@ -636,7 +832,7 @@ impl RvLower {
 //          |
 //       [BoxInt]
 //
-struct RvArithmeticLower {
+struct RvArithLower {
     lower: RvLower,
 }
 
@@ -775,6 +971,23 @@ impl RvArithmetciLower {
         };
 
         self.lower_with_builtin(x);
+    }
+}
+
+// -- ==========================================================================
+// String Concatenation Lowering
+//
+//   RvConStr operator can take any number of inputs, up to now, we don't support
+//   ConStr type internally for our string representation. So all the string
+//   concatenation will be lowered as builtin call
+
+struct RvStrConLower;
+
+impl RvStrConLower {
+    fn lower(&mut self, x: Nref) {
+        debug_assert!(x.borrow().op.op == Opcode::RvConStr);
+        let lower_con = self.lower.lower_str_con(&mut x);
+        Node::replace_and_dispose(&mut x, lower_con);
     }
 }
 
@@ -1085,25 +1298,170 @@ impl RvUnaryLower {
 }
 
 // -- ==========================================================================
-// String Concatenation Lowering
 //
-//   RvConStr operator can take any number of inputs, up to now, we don't support
-//   ConStr type internally for our string representation. So all the string
-//   concatenation will be lowered as builtin call
+// RvListCreate
+// RvListAdd
+//
+// List creation lower, the RvListCreate will become a builtin call which will
+// know how many elements should be prepared for allocation.
+//
+// RvListAdd will becomes callback for runtime information to add the value to
 
-struct RvStrConLower;
+struct RvListLower {
+    lower: RvLower,
+}
 
-impl RvStrConLower {
-    fn lower(&mut self, x: Nref) {
-        debug_assert!(x.borrow().op.op == Opcode::RvConStr);
+impl RvListLower {
+    fn lower_list_create(&mut self, n: Nref) {
+    }
+}
 
-        // generate any arguments size (N-ary) function call's con_str
-        let call = self.lower.do_builtin_call_nary(
-            x.borrow().value.clone(),
-            BuiltinCall::ConStr,
-            x.bc.clone(),
+
+// -- ==========================================================================
+//
+// RvMemIndexLoad
+// RvMemIndexStore
+//
+// lower the array access and storage.
+//
+//   The array will be shapped as following layout
+//
+//   struct Array {
+//      ptr: *mut T,
+//      size: usize,
+//      cap: usize,
+//   };
+//
+// During the construction lowering, the array's operation will be directly
+// mapped to component loading via offset which is mostly just trivial costs.
+// The array operation will not be materialized by runtime call.
+//
+
+struct RvIndexLower {
+    lower: RvLower,
+}
+
+impl RvIndexLower {
+    fn lower_load(&mut self, n: Nref) {
+        debug_assert!(n.borrow().op.op == Opcode::RvMemIndexLoad);
+        debug_assert!(n.borrow().value.len() == 2);
+        let array = self.n.borrow().value[0].clone();
+        let index = self.n.borrow().value[1].clone();
+
+        // unboxed the array, this should generate guard to testify whether the
+        // object is an array or not. notes, this is not guard, but a trap, ie
+        // generate an error once it returns from the JIT frame
+        //
+        // 0) unboxed array with trap guard
+        let unboxed_array =
+            self.lower.new_unbox_trap(array, n.borrow().bc.clone());
+
+        // 1) now generate raw array index, notes, the array always returns a
+        //    boxed value unless we have sperate IR
+        let boxed_value = self.lower.new_index_load_boxed(
+            unboxed_array,
+            index,
+            n.borrow().bc.clone(),
         );
 
-        Node::replace_and_dispose(&mut x, call);
+        Node::replace_and_dispose(&mut n, boxed_value);
+    }
+
+    fn lower_store(&mut self, n: Nref) {
+        debug_assert!(n.borrow().op.op == Opcode::RvMemIndexLoad);
+        debug_assert!(n.borrow().value.len() == 3);
+        let array = self.n.borrow().value[0].clone();
+        let index = self.n.borrow().value[1].clone();
+        let value = self.n.borrow().value[2].clone();
+
+        // unboxed the array, this should generate guard to testify whether the
+        // object is an array or not. notes, this is not guard, but a trap, ie
+        // generate an error once it returns from the JIT frame
+        //
+        // 0) unboxed array with trap guard
+        let unboxed_array =
+            self.lower.new_unbox_trap(array, n.borrow().bc.clone());
+
+        // 1) now generate raw array index, notes, the array always returns a
+        //    boxed value unless we have sperate IR
+        let stored_value = self.lower.new_index_store_boxed(
+            unboxed_array,
+            index,
+            value,
+            n.borrow().bc.clone(),
+        );
+
+        Node::replace_and_dispose(&mut n, boxed_value);
+    }
+
+    fn lower(&mut self, n: Nref) {
+        if n.borrow().op.op == Opcode::RvMemIndexLoad {
+            self.lower_load(n);
+        } else if n.borrow().op.op == Opcode::RvMemIndexStore {
+            self.lower_store(n);
+        } else {
+            unreachable!();
+        }
+    }
+}
+
+// Rv lower entry
+pub struct RvLowerPass {
+    arith: RvArithLower,
+    str_con: RvStrConLower,
+    comparison: RvComparisonLower,
+    unary: RvUnaryLower,
+}
+
+impl RvLowerPass {
+    fn new(j: Jitptr, f: FGraphptr) -> RvLowerPass {
+        RvLowerPass {
+            arith: RvArithLower::new(j.clone(), f.clone()),
+            str_con: RvStrConLower::new(j.clone(), f.clone()),
+            comparison: RvComparisonLower::new(j.clone(), f.clone()),
+            unary: RvUnaryLower::new(j.clone(), f.clone()),
+        }
+    }
+}
+
+impl NodePass for RvLowerPass {
+    fn run_node(&mut self, node: Nref) -> PassResult {
+        let op = node.borrow().op.op.clone();
+        match op {
+            // arithmetic
+            Opcode::RvAdd
+            | Opcode::RvSub
+            | Opcode::RvMul
+            | Opcode::RvDiv
+            | Opcode::RvPow
+            | Opcode::RvMod => {
+                self.arith.lower(node);
+            }
+
+            // str con
+            Opcode::RvConStr => {
+                self.str_con.lower(node);
+            }
+
+            Opcode::RvLt
+            | Opcode::RvLe
+            | Opcode::RvGt
+            | Opcode::RvGe
+            | Opcode::RvEq
+            | Opcode::RvNe => {
+                self.comparison.lower(node);
+            }
+
+            Opcode::RvNot
+            | Opcode::RvNeg
+            | Opcode::RvToString
+            | Opcode::RvToBoolean => {
+                self.unary.lower(node);
+            }
+
+            _ => (),
+        };
+
+        return PassResult::OK;
     }
 }

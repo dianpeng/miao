@@ -1,7 +1,7 @@
 use crate::bc::bytecode::*;
 use crate::interp::exec::{Arithmetic, Comparison, Unary};
-use crate::syntax::lexer::*;
 use crate::object::object::{handle_is_null, Gptr, Handle, Run, Runptr};
+use crate::syntax::lexer::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -2257,9 +2257,9 @@ impl Parser {
 
     fn parse_list(&mut self) -> bool {
         self.next();
-        self.bc().emit_d(Bytecode::ListStart, self.dbg());
-        let mut c = 0;
+        let mut label = self.bc().label_d(self.dbg());
 
+        let mut c = 0;
         while self.token != Token::RSqr {
             if !self.parse_expression() {
                 return false;
@@ -2270,6 +2270,11 @@ impl Parser {
                 _ => break,
             };
         }
+
+        {
+            let mut x = self.bc();
+            label.emit(&mut *x, Bytecode::ListStart(c));
+        }
         self.bc().emit_d(Bytecode::ListAdd(c), self.dbg());
 
         self.next();
@@ -2278,7 +2283,7 @@ impl Parser {
 
     fn parse_object(&mut self) -> bool {
         self.next();
-        self.bc().emit_d(Bytecode::ObjectStart, self.dbg());
+        let mut label = self.bc().label_d(self.dbg());
         let mut c = 0;
 
         while self.token != Token::RBra {
@@ -2300,6 +2305,10 @@ impl Parser {
             };
         }
 
+        {
+            let mut x = self.bc();
+            label.emit(&mut *x, Bytecode::ObjectStart(c));
+        }
         self.bc().emit_d(Bytecode::ObjectAdd(c), self.dbg());
 
         self.next();

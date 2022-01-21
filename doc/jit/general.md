@@ -1,6 +1,14 @@
 # Backends General Introduction
 
-## Intro
+## Brief
+
+The JIT backend features a optimized JIT compiler which does a bunch of pass
+to optimize the code and try to generate competitive machine code. Notes, this
+is not a simple full-code-generation style JIT compiler but does heavy weight
+optimization. If not, why am I here ? :)
+
+
+## IR
 
 The IR graph of the language uses a hybrid Sea-of-nodes and traditional CFG style.
 The statement will be translated into 2 categories:

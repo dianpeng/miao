@@ -370,10 +370,15 @@ impl FBuilder {
     //    write i = i, we should just rule out this situation
     //
     fn leave_env(&mut self) {
+        let current_cfg = self.cur_env().borrow().cfg.clone();
         for pp in self.cur_env().borrow().loop_iv.iter() {
             let current = self.stack_index(pp.0);
             let mut phi = Nref::clone(&pp.1);
-            assert!(Node::replace_placeholder_value(&mut phi, current) == 1);
+            assert!(Node::replace_phi_placeholder_value(
+                &mut phi,
+                current,
+                Nref::clone(&current_cfg)
+            ));
         }
         self.cur_env.pop();
     }
@@ -791,11 +796,18 @@ impl FBuilder {
     // List
     // TODO(dpeng): Optimize list to support hinting of the list size for reserve
     //   memory usage internally.
-    fn b_list_create(&mut self, bcpos: u32) -> bool {
-        let val = self
+    fn b_list_create(&mut self, len: u32, bcpos: u32) -> bool {
+        let mut val = self
             .mptr()
             .borrow_mut()
             .new_rv_list_create(self.bc_ctx(bcpos));
+
+        let len = self
+            .mptr()
+            .borrow_mut()
+            .new_imm_u32(len, self.bc_ctx(bcpos));
+        Node::add_value(&mut val, len);
+
         self.output_tos(val);
         return true;
     }
@@ -820,11 +832,19 @@ impl FBuilder {
     }
 
     // Object
-    fn b_object_create(&mut self, bcpos: u32) -> bool {
-        let val = self
+    fn b_object_create(&mut self, len: u32, bcpos: u32) -> bool {
+        let mut val = self
             .mptr()
             .borrow_mut()
             .new_rv_object_create(self.bc_ctx(bcpos));
+
+        let len = self
+            .mptr()
+            .borrow_mut()
+            .new_imm_u32(len, self.bc_ctx(bcpos));
+
+        Node::add_value(&mut val, len);
+
         self.output_tos(val);
         return true;
     }
@@ -1152,11 +1172,11 @@ impl FBuilder {
             Bytecode::LoadFunction(i) => self.b_load_function(i, bcpos),
 
             // lists
-            Bytecode::ListStart => self.b_list_create(bcpos),
+            Bytecode::ListStart(v) => self.b_list_create(v, bcpos),
             Bytecode::ListAdd(c) => self.b_list_add(c, bcpos),
 
             // object
-            Bytecode::ObjectStart => self.b_object_create(bcpos),
+            Bytecode::ObjectStart(v) => self.b_object_create(v, bcpos),
             Bytecode::ObjectAdd(c) => self.b_object_add(c, bcpos),
 
             // iterator
@@ -1709,12 +1729,24 @@ mod fbuilder_tests {
     fn basic() {
         do_print_code(
             r#"
-            let i = 0;
-for y in xx {
-    i += 1;
-    if i > 100 { i = 1; break; }
-}
-return i;
+ let lhs = 10;
+ let rhs = 20;
+ let cnt = 10;
+ let i = 0;
+ let out = -10;
+ for {
+   if i == cnt {
+     break;
+   }
+
+   let v = lhs - rhs;
+   if v != 0 {
+     out = v;
+     break;
+   }
+   i += 1;
+ }
+ return out;
 "#,
         );
 

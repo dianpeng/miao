@@ -45,11 +45,11 @@ pub enum Bytecode {
     SetUpvalue(Index),
 
     // list
-    ListStart,
+    ListStart(u32),
     ListAdd(u32),
 
     // Object
-    ObjectStart,
+    ObjectStart(u32),
     ObjectAdd(u32),
 
     // Iterator
@@ -276,6 +276,8 @@ impl BytecodeArray {
     pub fn label(&mut self) -> Label {
         let pos = self.code_pos();
         self.array.push(Bytecode::Label);
+        self.debug.push(Lpos::nil());
+
         return Label { pos: pos };
     }
 

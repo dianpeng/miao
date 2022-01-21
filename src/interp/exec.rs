@@ -1069,10 +1069,10 @@ impl Exec {
                     Bytecode::LoadUpvalue(i) => self.load_upvalue(i, run),
                     Bytecode::SetUpvalue(i) => self.set_upvalue(i, run),
 
-                    Bytecode::ListStart => self.list_start(run),
+                    Bytecode::ListStart(_) => self.list_start(run),
                     Bytecode::ListAdd(v) => self.list_add(v, run),
 
-                    Bytecode::ObjectStart => self.object_start(run),
+                    Bytecode::ObjectStart(_) => self.object_start(run),
                     Bytecode::ObjectAdd(v) => self.object_add(v, run),
 
                     Bytecode::IteratorNew => self.iterator_new(run),

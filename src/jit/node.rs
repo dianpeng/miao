@@ -66,7 +66,7 @@ pub enum DefUse {
 
 pub type DefUseList = Vec<DefUse>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Imm {
     Index(u32),
 
@@ -524,6 +524,20 @@ pub enum Opcode {
     F64Gt,
     F64Ge,
 
+    // Boolean type, only worked here for boolean types, other types are not
+    // allowed here.
+    BooleanEq,
+    BooleanNe,
+
+    // Just testify whether the lhs/rhs are both null or not
+    NullEq,
+    NullNe,
+
+    // -------------------------------------------------------------------------
+    // Pointer operations, are useful for performing very high performant inline
+    // for boxed value type. For example, the string comparison can be entirely
+    // inline(lowered) as a loop of pointer comparison if we can/want.
+    //
     // Pointer comparison, required the previous unbox result in pointer types
     //
     //   UnboxStr
@@ -536,15 +550,13 @@ pub enum Opcode {
     PtrEq,
     PtrNe,
 
-    // Boolean type, only worked here for boolean types, other types are not
-    // allowed here.
-    BooleanEq,
-    BooleanNe,
+    // Notes the ptr_deref allows to take a value as offset to indicate the
+    // addressing mode. This is very similar as intel's addressing mode etc ...
+    PtrDerefI64,
+    PtrDerefI32,
+    PtrDerefU32,
 
-    // Just testify whether the lhs/rhs are both null or not
-    NullEq,
-    NullNe,
-
+    // -------------------------------------------------------------------------
     // String comparison types, specifically designed for string's
     //  They can provide extra lower hint when compiler find it is capable o
     //  performing fancy optimization internally
@@ -554,6 +566,17 @@ pub enum Opcode {
     StrLe,
     StrGt,
     StrGe,
+
+    // Specialized code for dealing with string attributes which can be used to
+    // support string operation inline/lowered
+    //
+    // Load a string's length as i64
+    StrLenI64,
+
+    // Load a string's internal code point array as Ptr, notes user then can use
+    // PtrAdd4 to bump the pointer and then deference each codepoint as
+    // PtrDeferU32
+    StrAddrPtr,
 
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
@@ -1067,22 +1090,27 @@ impl Node {
     }
 
     pub fn remove_value(x: &mut Nref, i: usize) {
-        let vv = DefUse::Value(Nref::downgrade(&x.borrow().value[i]));
-        Node::remove_def_use(x, vv);
-
+        {
+            let mut def = x.borrow().value[i].clone();
+            Node::remove_def_use(&mut def, DefUse::Value(Nref::downgrade(x)));
+        }
         x.borrow_mut().value.remove(i);
     }
 
     pub fn remove_control(x: &mut Nref, i: usize) {
-        let vv = DefUse::Control(Nref::downgrade(&x.borrow().cfg[i]));
-        Node::remove_def_use(x, vv);
+        {
+            let mut def = x.borrow().cfg[i].clone();
+            Node::remove_def_use(&mut def, DefUse::Control(Nref::downgrade(x)));
+        }
 
         x.borrow_mut().cfg.remove(i);
     }
 
     pub fn remove_effect(x: &mut Nref, i: usize) {
-        let vv = DefUse::Control(Nref::downgrade(&x.borrow().effect[i]));
-        Node::remove_def_use(x, vv);
+        {
+            let mut def = x.borrow().effect[i].clone();
+            Node::remove_def_use(&mut def, DefUse::Effect(Nref::downgrade(x)));
+        }
 
         x.borrow_mut().effect.remove(i);
     }
@@ -1113,6 +1141,55 @@ impl Node {
         Node::remove_effect(x, idx);
     }
 
+    // replace the value inplaces
+    pub fn replace_value(x: &mut Nref, i: usize, new_val: Nref) {
+        {
+            let mut def = x.borrow().value[i].clone();
+            assert!(Node::remove_def_use(
+                &mut def,
+                DefUse::Value(Nref::downgrade(x))
+            ));
+        }
+
+        x.borrow_mut().value[i] = new_val;
+        {
+            let weak_ref = Rc::downgrade(x);
+            x.borrow_mut().def_use.push(DefUse::Value(weak_ref));
+        }
+    }
+
+    pub fn replace_effect(x: &mut Nref, i: usize, new_val: Nref) {
+        {
+            let mut def = x.borrow().effect[i].clone();
+            assert!(Node::remove_def_use(
+                &mut def,
+                DefUse::Effect(Nref::downgrade(x))
+            ));
+        }
+
+        x.borrow_mut().effect[i] = new_val;
+        {
+            let weak_ref = Rc::downgrade(x);
+            x.borrow_mut().def_use.push(DefUse::Effect(weak_ref));
+        }
+    }
+
+    pub fn replace_control(x: &mut Nref, i: usize, new_val: Nref) {
+        {
+            let mut def = x.borrow().cfg[i].clone();
+            assert!(Node::remove_def_use(
+                &mut def,
+                DefUse::Control(Nref::downgrade(x))
+            ));
+        }
+
+        x.borrow_mut().cfg[i] = new_val;
+        {
+            let weak_ref = Rc::downgrade(x);
+            x.borrow_mut().def_use.push(DefUse::Control(weak_ref));
+        }
+    }
+
     // If Y is been used by X, then we remove Y from X's usage list.
     pub fn remove_use(x: &mut Nref, y: &Nref) -> bool {
         let r = Node::find_use(y, x);
@@ -1137,7 +1214,8 @@ impl Node {
 
     // remove all the use of node x. Notes, this doesn't impact x's own value
     pub fn remove_all_use(x: &mut Nref) {
-        for u in x.borrow().def_use.iter() {
+        while x.borrow().def_use.len() != 0 {
+            let u = x.borrow().def_use[0].clone();
             match u {
                 DefUse::Effect(ptr) => {
                     if let Option::Some(mut tar) = ptr.upgrade() {
@@ -1156,8 +1234,6 @@ impl Node {
                 }
             };
         }
-
-        x.borrow_mut().def_use.clear();
     }
 
     // Replace cur's all usage into tar
@@ -1212,11 +1288,36 @@ impl Node {
                     DefUse::Value(Nref::downgrade(&Nref::clone(x)))
                 ));
                 *v = Nref::clone(&value);
-
                 i += 1;
             }
         }
         return i;
+    }
+
+    // Find the first placeholder value and replace its value along with the
+    // control flow parts
+    pub fn replace_phi_placeholder_value(
+        phi: &mut Nref,
+        value: Nref,
+        cfg: Nref,
+    ) -> bool {
+        debug_assert!(phi.borrow().is_phi());
+
+        let pos = phi
+            .borrow()
+            .value
+            .iter()
+            .position(|v| v.borrow().is_placeholder());
+
+        match pos {
+            Option::Some(pp) => {
+                Node::replace_value(phi, pp, value);
+                Node::replace_control(phi, pp, cfg);
+            }
+
+            _ => return false,
+        };
+        return true;
     }
 
     pub fn simplify_phi(x: &mut Nref) -> bool {
@@ -2177,7 +2278,7 @@ impl Op {
             Opcode::RvListCreate,
             false,
             false,
-            ParamLimits::Limit(0),
+            ParamLimits::Limit(1),
             MachineFlag {},
         ))
     }
@@ -2201,7 +2302,7 @@ impl Op {
             Opcode::RvObjectCreate,
             false,
             false,
-            ParamLimits::Limit(0),
+            ParamLimits::Limit(1),
             MachineFlag {},
         ))
     }

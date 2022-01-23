@@ -2,14 +2,12 @@
 
 ## Brief
 
-The JIT backend features a optimized JIT compiler which does a bunch of pass
-to optimize the code and try to generate competitive machine code. Notes, this
-is not a simple full-code-generation style JIT compiler but does heavy weight
-optimization. If not, why am I here ? :)
-
+The JIT backend features a optimized JIT compiler which does a bunch of passes
+to optimize the code and try to generate performant machine code.
 
 ## IR
 
+### HIR (High level IR)
 The IR graph of the language uses a hybrid Sea-of-nodes and traditional CFG style.
 The statement will be translated into 2 categories:
 
@@ -43,26 +41,42 @@ used by CFG node and PHI node. The CFG node uses dependency to link the CFG grap
 forward and the PHI node will use control dependency to record its value input's
 bounded CFG nodes.
 
-Notes, the def-use/value dependency is been linked backwardly, ie the use takes
-pointer points back to its def; but CFG are linked forwardly.
+Notes, the def-use/value dependency is been linked backwards, ie the use takes
+pointer points back to its def; but CFG are linked forward.
 
 Lastly, each node will also have a reverse list which records which node are
-using the current node, ie the def-use chain. The servese list have label to
+using the current node, ie the def-use chain. The reverse list have label to
 tell the edge category. This is mostly for modifying the node in the graph, ie
 like duplication of node, replace of node etc ...
 
-## Optimization
+### LIR (Low IR)
 
-Internally several pass of lowering will be performed but they are really not
-mean to do optimization but just to enable future optimization and allow code
-generation to happen. We just ignore the lower part for now.
+The low IR will have a separate structure than the src/jit/node.rs, which is
+just high and middle IR. The low IR is located inside of the backend folder
+which features a minimal opcode traditionall CFG style graph. The instruction in
+low IR is fixed inside of a certain places of CFG and also it uses its value
+with speicalized SSATmp. The SSATmp indicates a local temporary which enables
+future RA to kick in.
 
-### Simplification
+A traditional CFG will allow us to easily lower certain ir node in a much more
+aggressive way, ie StrLt will become inline loops etc ...
+
+## Compiler Pass (Analytics, Transform, Optimization)
+
+### 1. Simplification
 
 This is really just fixup ceratin redundancy been emitted by the IR builder, and
-enable future optimization afterwards
+enable future optimization afterwards. 
 
-### Typer
+It mainly does 
+
+  1) trivial PHI nodes simplifcation and 
+  2) propagation of immediate value to its load.
+
+     ie LoadInt ---> [Imm(xxx)] replaced with [Imm(yyy)] from the prototype's
+        constant table
+
+### 2. Typer
 
 This is a speculative type pass to mark node's type. Each node can have 2 types,
 one is the |the_type| which contains exact type of the nodes. The other is the
@@ -71,56 +85,112 @@ one is the |the_type| which contains exact type of the nodes. The other is the
 just a enabler for more aggresive type guessing and enable future speculative
 optimization.
 
-### Fold
+### 3. Constant Folding
 
-Folding pass, this gives way more than constant folding though. They are mostly
-worked inside of the local expression, which may covers following optimization
+Simple constant folding
 
-  1) Constant Folding
-  2) Algebra reassociation(commute ...)
-  3) Identity testing (0+a, a+0, 1*a, ....)
-  4) Strength reduction
+### 4. GVN(Global Value Numbering)
 
-### DCE (dead code elimination)
+This pass tires to dedup those common sub experssion in global scope and it just
+impacts none side effect nodes
 
-Mainly for eliminate dead block, due to previous constant folding etc ...
-
-### Memory
+### 5. Memory optimization (alias analysis)
 
 Store forwarding and load sinking. After store forwarding and load sinking, the
 unneeded memory allocation will become dead code. Avoiding using a expensive
 escape analysis.
 
-### GVN (global value numbering)
+### 6. Rvalue Lower
 
-Deduplicate the global value. Notes the guard is floating, so it is important
-for us to have GVN to de-dup the guard instruction
+This pass tries to lower the RvXXX instruction, ie the high level IR into mid
+and/or lower IR. After this pass, all the guard/trap instruction is inserted and
+all the actual polymorphic operation will be lowered with actual low level
+operation with deoptimization point generated.
 
-### GCM (global code motion)
-
-Global code motion, enable schedule range of floating expression
-
-### LICM (loop invariants code motion)
-
-Loop peeling + GVN
-
-### Scheduling
-
-Schedule floating instruction into the IR graph and linking the deoptimization
-point for each guard instruction. And remove unneeded deoptimization entry by
-DCE.
+This pass mainly utilize feedback type and typer's type propagation.
 
 
-### Intruction Selection
+### 7. Expression Optimization
+
+This pass tries to aggressively optimize experssion, ie strength reduction,
+sparse/conditional constant folding, algebra reassociation, normal constant
+folding etc ...
+
+
+### 8. DCE (dead code elimination)
+
+Dead code elimination, this pass is basically used for deleting control flow
+nodes that are not in used anymore
+
+### 9. LCIM (loop invariants code motion)
+
+This pass basically performs a simple LCIM. What it actually does is that it
+tries to peel one iteration from the loop and put it ahead of the loop body
+as dominator and then runs GVN on tops of the newly generated graph to perform
+dedup. Any LCIM value should be deduped by GVN so later scheduling pass will
+just have to find out a dominator that these def-use all shared but not in loop
+to perform LCIM.
+
+This trick is been used in LuaJIT.
+
+### 10. Scheduling
+
+Scheduling of the instruction into BB. This pass is very important for us since
+it does put the floating node fixed into BB and also it fixed BB skeleton as
+well.
+
+After this pass, all the nodes will not be sea-of-nodes but traditionally CFG.
+
+Once the scheduling is done, a CFG lower will be performed which will rewrite
+bunch of mid/low tier IR instruction or any intrinsic instruction into its
+corresponding CFG data structure. Additionally, all the guards/trap instructions
+will be lowered into if-else jumps. The CFG should only contain basic control
+flow instruction, typed arithmetic operation, bitwise operation, memory move
+operation, and call operation.
+
+The call will have to fix its ABI things which is done in the low IR pass
+
+Notes, each node will reference its value/use with a speical SSATmp object which
+is used later on in Phi elimination and RA.
+
+### 11. Intruction Selection
 
 Selection of instruction for lower machine and prepare for the specific ARCH
 and RA.
 
+### 12. Phi Elimination
 
-### RA (register allocation)
+All the phi will be eliminated by having extra moves, the extra moves will be
+optimized or fixed to register/stack slot by RA passes. After this all the PHI
+should be gone.
 
-Liner scan RA + bin coallesc
+### 13. RA (register allocation)
 
-### Code Generation
+Liner scan RA + bin coallesc, move-move elimination will be performed
 
-Generate arch specific machine code
+ABI fixing will be here either.
+
+### 14. Code Generation
+
+Generate specific machine code into the code buffer and resume the execution
+of interp. When certain bytecode is hit, ie loop back or call, we will resume
+the execution in jitted code. 
+
+Finally, yeah! :)
+
+
+## Future Workers (Why the important optimization X is missing?)
+
+### Inline is missing purposely
+inline will be added in the future
+
+### Loop optimization other than LCIM is missing
+vectorization, unrolling, unswitching, predicate optimization, explicit rotation
+peeling, scalar evolution anlysis, where are they? 
+
+The fancy loop optimization will be deferred until we have time to implement :)
+
+
+### fancy scheduling
+I really want to experiment hyperblock or superblock clonning during scheduling,
+and I will try it when I have resource

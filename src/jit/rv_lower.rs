@@ -192,6 +192,54 @@ impl RvLower {
         return Option::None;
     }
 
+    fn new_trap(&mut self, n: Nref, hint: FType, bc_ctx: BcCtx) -> Option<Nref> {
+        // (0) check the hint type is available or not, if so, then generates
+        //     the gaurd based on the hint
+        match hint {
+            FType::Int => {
+                return self.mptr().borrow_mut().new_trap_int(n, bc_ctx);
+            }
+
+            FType::Real => {
+                return self.mptr().borrow_mut().new_trap_real(n, bc_ctx);
+            }
+
+            FType::Boolean => {
+                return self.mptr().borrow_mut().new_trap_boolean(n, bc_ctx);
+            }
+
+            FType::Null => {
+                return self.mptr().borrow_mut().new_trap_null(n, bc_ctx);
+            }
+
+            FType::Str => {
+                return self.mptr().borrow_mut().new_trap_str(n, bc_ctx);
+            }
+
+            FType::List => {
+                return self.mptr().borrow_mut().new_trap_list(n, bc_ctx);
+            }
+
+            FType::Object => {
+                return self.mptr().borrow_mut().new_trap_object(n, bc_ctx);
+            }
+
+            FType::Function => {
+                return self.mptr().borrow_mut().new_trap_function(n, bc_ctx);
+            }
+
+            FType::NFunction => {
+                return self.mptr().borrow_mut().new_trap_nfunction(n, bc_ctx);
+            }
+
+            FType::Iter => {
+                return self.mptr().borrow_mut().new_trap_iter(n, bc_ctx);
+            }
+            _ => (),
+        };
+        return Option::None;
+    }
+
     // -------------------------------------------------------------------------
     // The input value n must be a typped value, ie with a guard
     fn new_unbox_from_guard(&mut self, n: Nref, bc: BcCtx) -> Nref {
@@ -1312,10 +1360,8 @@ struct RvListLower {
 }
 
 impl RvListLower {
-    fn lower_list_create(&mut self, n: Nref) {
-    }
+    fn lower_list_create(&mut self, n: Nref) {}
 }
-
 
 // -- ==========================================================================
 //
@@ -1354,7 +1400,8 @@ impl RvIndexLower {
         //
         // 0) unboxed array with trap guard
         let unboxed_array =
-            self.lower.new_unbox_trap(array, n.borrow().bc.clone());
+            self.lower
+                .new_unbox_trap(array, FType::List, n.borrow().bc.clone());
 
         // 1) now generate raw array index, notes, the array always returns a
         //    boxed value unless we have sperate IR
@@ -1380,7 +1427,8 @@ impl RvIndexLower {
         //
         // 0) unboxed array with trap guard
         let unboxed_array =
-            self.lower.new_unbox_trap(array, n.borrow().bc.clone());
+            self.lower
+                .new_unbox_trap(array, FType::List, n.borrow().bc.clone());
 
         // 1) now generate raw array index, notes, the array always returns a
         //    boxed value unless we have sperate IR

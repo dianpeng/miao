@@ -2,13 +2,9 @@ use crate::jit::iter::*;
 use crate::jit::j::*;
 use crate::jit::node::*;
 
-pub enum BailoutReason {
-    InvalidLogic,
-}
-
 pub enum PassResult {
     OK,
-    Bailout(BailoutReason), // should not JIT
+    Bailout(JitBailout), // should not JIT
 }
 
 pub trait FGraphPass {

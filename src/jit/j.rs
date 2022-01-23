@@ -64,3 +64,13 @@ impl Jit {
         return self.mpool.borrow().max_node_id();
     }
 }
+
+// JIT bailout reason, ie why we don't want to jit anymore
+//
+// 1. Type information is inconsistent, ie BUGs in our codes.
+// 2. Function are too long and too complicated
+pub enum JitBailout {
+    TypeInconsitent,
+    FunctionTooLong,
+    NoReason,
+}

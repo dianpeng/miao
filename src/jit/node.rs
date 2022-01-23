@@ -100,6 +100,8 @@ pub enum MainType {
     Real,
     Boolean,
     Null,
+
+    Ptr,
     Str,
     List,
     Object,
@@ -230,13 +232,11 @@ pub struct Node {
     pub alias: Option<Aref>,
 
     // -----------------------------------------------------------------------
-    // Type information
+    // Type information (Guessed/Speculative types)
     //
-    // the the_type indicates the original type been emitted by the instruction
-    // since some instruction is already typped. type_hint is the type that is
-    // been inferred from the typper, they are not stable nor for sure. It can
-    // be used as a way to allow speculative type inference.
-    pub the_type: JType,
+    // Each node will have type_hint field, which will be set by the typer pass.
+    // Plus, each op related to the node may already have a builtin type info
+    // which can be used to tell the type of the nodes.
     pub type_hint: MainType,
 
     // Whether the node is been treated as dead or not
@@ -254,9 +254,10 @@ pub enum OpTier {
     Phi,
     Bval,  // box/unbox operations, we will have special phase to lower them
     Guard, // guard operations
+    Trap,  // similar as guard, but will yield an error after deoptimize
     Rval,  // high level operations, ie Rval(standsfor Rust Value, boxed)
     Mid,   // middle tier IR, standsfor none-architecture specific instructions
-    Arch,  // arch tier IR, closely related to the target assembly language
+    Low,   // arch tier IR, closely related to the target assembly language
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -326,7 +327,7 @@ pub enum Opcode {
     UnboxBoolean,
     UnboxNull,
 
-    // Heap
+    // Ptr
     UnboxPtr,
     UnboxStr,
     UnboxList,
@@ -365,8 +366,8 @@ pub enum Opcode {
     GuardBoolean,
     GuardNull,
 
-    // Heap object
-    GuardHeap,
+    // Ptr object
+    GuardPtr,
 
     // All heap allocated object
     GuardStr,
@@ -380,6 +381,32 @@ pub enum Opcode {
     GuardTrue,
     GuardFalse,
     GuardI64NotZero,
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //                               Trap
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //
+    // Trap is similar as Guard, except it doesn't generate a deoptimization back
+    // to interpreter frame, but generates an runtime error. Ie, if guard failed
+    // then it will set a error field and perform exactly same deoptimization as
+    // guard. The execution will be back to interpreter and then an error will
+    // be detected with the frame been unwinded
+    TrapInt,
+    TrapReal,
+    TrapBoolean,
+    TrapNull,
+    TrapPtr,
+    TrapStr,
+    TrapList,
+    TrapObject,
+    TrapFunction,
+    TrapNFunction,
+    TrapIter,
+
+    TrapTrue,
+    TrapFalse,
 
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
@@ -639,6 +666,20 @@ pub struct Op {
     pub deoptimize: bool,
     pub in_size: ParamLimits,
     pub flag_size: MachineFlag,
+
+    // Inherited type fields, the Op may or may not have type based on its op
+    // type.
+    //
+    // Mostly, the Rval IR will not be typped since they are polymorphic ops,
+    // but for mid/low IR, they are all typped here. This type_field will tell
+    // the inherited type of the Op and should be used to check wether the op
+    // is already typped or not.
+    //
+    // Each node will have a type_hint field to indicate its hintted type, this
+    // field is only set when the typer can collect enough feedback information
+    // from runtime. If the op's the_type is set, the type_hint should be ignored
+    // since it is less priority type
+    pub the_type: JType,
 }
 
 // Control-flow block, used when we start to do scheduling of instructions.
@@ -696,8 +737,9 @@ pub struct Mpool {
     op_box_boolean: Oref,
     op_box_true: Oref,
     op_box_false: Oref,
-
     op_box_null: Oref,
+
+    op_box_ptr: Oref,
     op_box_str: Oref,
     op_box_list: Oref,
     op_box_object: Oref,
@@ -727,7 +769,7 @@ pub struct Mpool {
     op_guard_null: Oref,
 
     // heap object
-    op_guard_heap: Oref,
+    op_guard_ptr: Oref,
     op_guard_str: Oref,
     op_guard_list: Oref,
     op_guard_object: Oref,
@@ -739,6 +781,20 @@ pub struct Mpool {
     op_guard_true: Oref,
     op_guard_false: Oref,
     op_guard_i64_not_zero: Oref,
+
+    op_trap_int: Oref,
+    op_trap_real: Oref,
+    op_trap_boolean: Oref,
+    op_trap_null: Oref,
+    op_trap_ptr: Oref,
+    op_trap_str: Oref,
+    op_trap_list: Oref,
+    op_trap_object: Oref,
+    op_trap_function: Oref,
+    op_trap_nfunction: Oref,
+    op_trap_iter: Oref,
+    op_trap_true: Oref,
+    op_trap_false: Oref,
 
     // (((((((((((((((((((((( PLACEHOLDER ))))))))))))))))))))))
     op_placeholder: Oref,
@@ -917,7 +973,218 @@ impl JType {
             sub: SubType::Invalid,
         }
     }
+    pub fn new_int() -> JType {
+        JType::new_i64()
+    }
 
+    pub fn new_i64() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::I64,
+        }
+    }
+
+    pub fn new_i32() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::I32,
+        }
+    }
+
+    pub fn new_i16() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::I16,
+        }
+    }
+
+    pub fn new_i8() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::I8,
+        }
+    }
+
+    pub fn new_u32() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::U32,
+        }
+    }
+
+    pub fn new_u16() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::U16,
+        }
+    }
+
+    pub fn new_u8() -> JType {
+        JType {
+            main: MainType::Int,
+            sub: SubType::U8,
+        }
+    }
+
+    pub fn new_f64() -> JType {
+        JType {
+            main: MainType::Real,
+            sub: SubType::F64,
+        }
+    }
+
+    pub fn new_real() -> JType {
+        JType::new_f64()
+    }
+
+    pub fn new_boolean() -> JType {
+        JType {
+            main: MainType::Boolean,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_null() -> JType {
+        JType {
+            main: MainType::Null,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_ptr() -> JType {
+        JType {
+            main: MainType::Ptr,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_str() -> JType {
+        JType {
+            main: MainType::Str,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_list() -> JType {
+        JType {
+            main: MainType::List,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_object() -> JType {
+        JType {
+            main: MainType::Object,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_function() -> JType {
+        JType {
+            main: MainType::Function,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_nfunction() -> JType {
+        JType {
+            main: MainType::NFunction,
+            sub: SubType::Invalid,
+        }
+    }
+
+    pub fn new_iter() -> JType {
+        JType {
+            main: MainType::Iter,
+            sub: SubType::Invalid,
+        }
+    }
+
+    // Methods ----------------------------------------------------------------
+    pub fn is_unknown(&self) -> bool {
+        return self.main == MainType::Unknown;
+    }
+    pub fn is_known(&self) -> bool {
+        return !self.is_unknown();
+    }
+    pub fn is_typped(&self) -> bool {
+        return Node::is_known();
+    }
+    pub fn is_untypped(&self) -> bool {
+        return Node::is_unknown();
+    }
+
+    pub fn is_int(&self) -> bool {
+        return self.main == MainType::Int;
+    }
+    pub fn is_i64(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::I64;
+    }
+    pub fn is_i32(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::I32;
+    }
+    pub fn is_i16(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::I16;
+    }
+    pub fn is_i8(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::I8;
+    }
+
+    pub fn is_u32(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::U32;
+    }
+    pub fn is_u16(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::U16;
+    }
+    pub fn is_u8(&self) -> bool {
+        return self.main == MainType::Int && self.sub == SubType::U8;
+    }
+
+    pub fn is_real(&self) -> bool {
+        return self.main == MainType::Real;
+    }
+    pub fn is_f64(&self) -> bool {
+        return self.main == MainType::Real && self.sub == SubType::F64;
+    }
+
+    pub fn is_boolean(&self) -> bool {
+        return self.main == MainType::Boolean;
+    }
+    pub fn is_null(&self) -> bool {
+        return self.main == MainType::Null;
+    }
+    pub fn is_str(&self) -> bool {
+        return self.main == MainType::Str;
+    }
+    pub fn is_list(&self) -> bool {
+        return self.main == MainType::List;
+    }
+    pub fn is_object(&self) -> bool {
+        return self.main == MainType::Object;
+    }
+    pub fn is_function(&self) -> bool {
+        return self.main == MainType::Function;
+    }
+    pub fn is_iter(&self) -> bool {
+        return self.main == MainType::Iter;
+    }
+    pub fn is_nfunction(&self) -> bool {
+        return self.main == MainType::NFunction;
+    }
+    pub fn is_ptr(&self) -> bool {
+        return match self.main {
+            MainType::Ptr
+            | MainType::Str
+            | MainType::List
+            | MainType::Object
+            | MainType::Function
+            | MainType::NFunction
+            | MainType::Iter => true,
+            _ => false,
+        };
+    }
+
+    // FType to JType conversion ----------------------------------------------
     pub fn map_ftype(f: &FType) -> JType {
         return match f {
             FType::Int => JType {
@@ -966,10 +1233,6 @@ impl JType {
             },
         };
     }
-
-    pub fn is_unknown(&self) -> bool {
-        return self.main == MainType::Unknown;
-    }
 }
 
 impl Reclaim for Node {
@@ -1000,51 +1263,6 @@ impl Node {
     // Node operator. User needs to use the following APIs to mutate the node
     // otherwise the node may be in inconsistent state, since we have extra
     // metadata record for each node's def/use situations.
-    pub fn add_value(node: &mut Nref, v: Nref) {
-        // (0) adding the def-use into the v
-        {
-            let weak_ref = Rc::downgrade(node);
-            v.borrow_mut().def_use.push(DefUse::Value(weak_ref));
-        }
-
-        // (1) update the value lists
-        node.borrow_mut().value.push(v);
-
-        // sanity check against the number of operands added into the nodes
-        if let ParamLimits::Limit(num) = &node.borrow().op.in_size {
-            debug_assert!((*num as usize) >= node.borrow().value.len());
-        }
-    }
-
-    pub fn add_control(node: &mut Nref, v: Nref) {
-        // (0) adding the def-use into the v
-        {
-            let weak_ref = Rc::downgrade(node);
-            v.borrow_mut().def_use.push(DefUse::Control(weak_ref));
-        }
-        node.borrow_mut().cfg.push(v);
-    }
-
-    pub fn add_effect(node: &mut Nref, v: Nref) {
-        assert!(node.borrow().is_cfg());
-
-        // (0) adding the def-use into the v
-        {
-            let weak_ref = Rc::downgrade(node);
-            v.borrow_mut().def_use.push(DefUse::Effect(weak_ref));
-        }
-        node.borrow_mut().effect.push(v);
-    }
-
-    pub fn add_phi_value(phi: &mut Nref, value: Nref, cfg: Nref) {
-        debug_assert!(phi.borrow().is_phi());
-        debug_assert!(value.borrow().is_value());
-        debug_assert!(cfg.borrow().is_cfg());
-
-        Node::add_value(phi, value);
-        Node::add_control(phi, cfg);
-    }
-
     fn remove_def_use(x: &mut Nref, what: DefUse) -> bool {
         let wk = match what {
             DefUse::Effect(a) | DefUse::Control(a) | DefUse::Value(a) => a,
@@ -1320,6 +1538,51 @@ impl Node {
         return true;
     }
 
+    pub fn add_value(node: &mut Nref, v: Nref) {
+        // (0) adding the def-use into the v
+        {
+            let weak_ref = Rc::downgrade(node);
+            v.borrow_mut().def_use.push(DefUse::Value(weak_ref));
+        }
+
+        // (1) update the value lists
+        node.borrow_mut().value.push(v);
+
+        // sanity check against the number of operands added into the nodes
+        if let ParamLimits::Limit(num) = &node.borrow().op.in_size {
+            debug_assert!((*num as usize) >= node.borrow().value.len());
+        }
+    }
+
+    pub fn add_control(node: &mut Nref, v: Nref) {
+        // (0) adding the def-use into the v
+        {
+            let weak_ref = Rc::downgrade(node);
+            v.borrow_mut().def_use.push(DefUse::Control(weak_ref));
+        }
+        node.borrow_mut().cfg.push(v);
+    }
+
+    pub fn add_effect(node: &mut Nref, v: Nref) {
+        assert!(node.borrow().is_cfg());
+
+        // (0) adding the def-use into the v
+        {
+            let weak_ref = Rc::downgrade(node);
+            v.borrow_mut().def_use.push(DefUse::Effect(weak_ref));
+        }
+        node.borrow_mut().effect.push(v);
+    }
+
+    pub fn add_phi_value(phi: &mut Nref, value: Nref, cfg: Nref) {
+        debug_assert!(phi.borrow().is_phi());
+        debug_assert!(value.borrow().is_value());
+        debug_assert!(cfg.borrow().is_cfg());
+
+        Node::add_value(phi, value);
+        Node::add_control(phi, cfg);
+    }
+
     pub fn simplify_phi(x: &mut Nref) -> bool {
         debug_assert!(x.borrow().is_phi());
 
@@ -1371,7 +1634,6 @@ impl Node {
             id: id,
             bc: bcid,
             alias: Option::None,
-            the_type: JType::new_unknown(),
             type_hint: MainType::Unknown,
             dead: false,
         }));
@@ -1388,7 +1650,6 @@ impl Node {
             id: id,
             bc: bcid,
             alias: Option::None,
-            the_type: JType::new_unknown(),
             type_hint: MainType::Unknown,
             dead: false,
         }));
@@ -1513,13 +1774,50 @@ impl Op {
         return x.tier == OpTier::Phi;
     }
 
+    fn is_guard(x: &Oref) -> bool {
+        return x.tier == OpTier::Guard;
+    }
+
+    fn is_trap(x: &Oref) -> bool {
+        return x.tier == OpTier::Trap;
+    }
+
+    fn is_phi(x: &Oref) -> bool {
+        return x.tier == OpTier::Phi;
+    }
+
+    fn is_bval(x: &Oref) -> bool {
+        return x.tier == OpTier::Bval;
+    }
+
+    fn is_rval(x: &Oref) -> bool {
+        return x.tier == OpTier::Rval;
+    }
+
+    fn is_mid(x: &Oref) -> bool {
+        return x.tier == OpTier::Mid;
+    }
+
+    fn is_low(x: &Oref) -> bool {
+        return x.tier == OpTier::Low;
+    }
+
+    fn is_imm(x: &Oref) -> bool {
+        return x.tier == OpTier::Imm;
+    }
+
+    fn is_placeholder(x: &Oref) -> bool {
+        return x.tier == OpTier::Placeholder;
+    }
+
     fn is_value(x: &Oref) -> bool {
         return x.tier == OpTier::Bval
             || x.tier == OpTier::Guard
+            || x.tier == OpTier::Trap
             || x.tier == OpTier::Phi
             || x.tier == OpTier::Rval
             || x.tier == OpTier::Mid
-            || x.tier == OpTier::Arch
+            || x.tier == OpTier::Low
             || x.tier == OpTier::Imm
             || x.tier == OpTier::Placeholder;
     }
@@ -1542,10 +1840,33 @@ impl Op {
             deoptimize: deopt,
             in_size: isz,
             flag_size: fsz,
+            the_type: JType::unknown(),
         }
     }
 
-    fn new_binary(
+    fn new_type(
+        n: &str,
+        tier: OpTier,
+        op: Opcode,
+        side: bool,
+        deopt: bool,
+        isz: ParamLimits,
+        fsz: MachineFlag,
+        t: JType,
+    ) -> Op {
+        Op {
+            name: n.to_string(),
+            tier: tier,
+            op: op,
+            side_effect: side,
+            deoptimize: deopt,
+            in_size: isz,
+            flag_size: fsz,
+            the_type: t,
+        }
+    }
+
+    fn new_binary_untype(
         n: &str,
         tier: OpTier,
         opcode: Opcode,
@@ -1553,7 +1874,7 @@ impl Op {
         deopt: bool,
         fsz: MachineFlag,
     ) -> Op {
-        return Op::new(
+        return Op::new_untype(
             n,
             tier,
             opcode,
@@ -1565,17 +1886,17 @@ impl Op {
     }
 
     fn new_rv_binary(n: &str, opcode: Opcode) -> Op {
-        return Op::new_binary(
+        return Op::new_binary_untype(
             n,
             OpTier::Rval,
             opcode,
             false, // does not have side effect
             true,  // but generate deoptimize information
-            MachineFlag {},
+            MachineFlag::new_default(),
         );
     }
 
-    fn new_unary(
+    fn new_unary_untype(
         n: &str,
         tier: OpTier,
         opcode: Opcode,
@@ -1583,7 +1904,7 @@ impl Op {
         deopt: bool,
         fsz: MachineFlag,
     ) -> Op {
-        return Op::new(
+        return Op::new_untype(
             n,
             tier,
             opcode,
@@ -1594,38 +1915,59 @@ impl Op {
         );
     }
 
+    fn new_unary_type(
+        n: &str,
+        tier: OpTier,
+        opcode: Opcode,
+        side: bool,
+        deopt: bool,
+        fsz: MachineFlag,
+        t: JType,
+    ) -> Op {
+        return Op::new_type(
+            n,
+            tier,
+            opcode,
+            side,
+            deopt,
+            ParamLimits::Limit(1),
+            fsz,
+            t,
+        );
+    }
+
     fn new_rv_unary(n: &str, opcode: Opcode) -> Op {
-        return Op::new_unary(
+        return Op::new_unary_untype(
             n,
             OpTier::Rval,
             opcode,
             false,
             true,
-            MachineFlag {},
+            MachineFlag::new_default(),
         );
     }
 
     fn new_rv_load(n: &str, opcode: Opcode) -> Op {
-        return Op::new(
+        return Op::new_untype(
             n,
             OpTier::Rval,
             opcode,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         );
     }
 
     fn new_imm(n: &str, opcode: Opcode) -> Op {
-        return Op::new(
+        return Op::new_untype(
             n,
             OpTier::Imm,
             opcode,
             false,
             false,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         );
     }
 
@@ -1672,319 +2014,360 @@ impl Op {
     }
 
     fn box_i64() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_i64",
             OpTier::Bval,
             Opcode::BoxI64,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn box_i32() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_i32",
             OpTier::Bval,
             Opcode::BoxI32,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i32(),
         ))
     }
 
     fn box_i16() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_i16",
             OpTier::Bval,
             Opcode::BoxI16,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i16(),
         ))
     }
 
     fn box_i8() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_i8",
             OpTier::Bval,
             Opcode::BoxI8,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i8(),
         ))
     }
 
     fn box_u32() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_u32",
             OpTier::Bval,
             Opcode::BoxU32,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_u32(),
         ))
     }
     fn box_u16() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_u16",
             OpTier::Bval,
             Opcode::BoxU16,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_u16(),
         ))
     }
     fn box_u8() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_u8",
             OpTier::Bval,
             Opcode::BoxU8,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_u8(),
         ))
     }
 
     fn box_f64() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_f64",
             OpTier::Bval,
             Opcode::BoxF64,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn box_boolean() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_boolean",
             OpTier::Bval,
             Opcode::BoxBoolean,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn box_true() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_true",
             OpTier::Bval,
             Opcode::BoxTrue,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn box_false() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_false",
             OpTier::Bval,
             Opcode::BoxFalse,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn box_null() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_null",
             OpTier::Bval,
             Opcode::BoxNull,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_null(),
+        ))
+    }
+
+    fn box_ptr() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "box_ptr",
+            OpTier::Bval,
+            Opcode::BoxPtr,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_ptr(),
         ))
     }
 
     fn box_str() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_str",
             OpTier::Bval,
             Opcode::BoxStr,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_str(),
         ))
     }
 
     fn box_list() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_list",
             OpTier::Bval,
             Opcode::BoxList,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_list(),
         ))
     }
 
     fn box_object() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_object",
             OpTier::Bval,
             Opcode::BoxObject,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_object(),
         ))
     }
 
     fn box_iter() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_iter",
             OpTier::Bval,
             Opcode::BoxIter,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_object(),
         ))
     }
 
     fn box_function() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_function",
             OpTier::Bval,
             Opcode::BoxFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_function(),
         ))
     }
 
     fn box_nfunction() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_nfunction",
             OpTier::Bval,
             Opcode::BoxNFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_nfunction(),
         ))
     }
 
     fn unbox_i64() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_i64",
             OpTier::Bval,
             Opcode::UnboxI64,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn unbox_f64() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_f64",
             OpTier::Bval,
             Opcode::UnboxF64,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn unbox_boolean() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_boolean",
             OpTier::Bval,
             Opcode::UnboxBoolean,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn unbox_null() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_null",
             OpTier::Bval,
             Opcode::UnboxNull,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_null(),
         ))
     }
 
     fn unbox_str() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_str",
             OpTier::Bval,
             Opcode::UnboxStr,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_str(),
         ))
     }
 
     fn unbox_list() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_list",
             OpTier::Bval,
             Opcode::UnboxList,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_list(),
         ))
     }
 
     fn unbox_object() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_object",
             OpTier::Bval,
             Opcode::UnboxObject,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_object(),
         ))
     }
 
     fn unbox_iter() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_iter",
             OpTier::Bval,
             Opcode::UnboxIter,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_iter(),
         ))
     }
 
     fn unbox_function() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_function",
             OpTier::Bval,
             Opcode::UnboxFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_function(),
         ))
     }
 
     fn unbox_nfunction() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "unbox_nfunction",
             OpTier::Bval,
             Opcode::UnboxNFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_nfunction(),
         ))
     }
 
     fn box_load_type_i64() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "box_load_type_i64",
             OpTier::Bval,
             Opcode::BoxLoadTypeI64,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
@@ -1992,156 +2375,329 @@ impl Op {
     // (((Guard)))
     // =============================================================
     fn guard_int() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_int",
             OpTier::Guard,
             Opcode::GuardInt,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_int(),
         ))
     }
 
     fn guard_real() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_real",
             OpTier::Guard,
             Opcode::GuardReal,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_real(),
         ))
     }
 
     fn guard_boolean() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_boolean",
             OpTier::Guard,
             Opcode::GuardBoolean,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn guard_null() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_null",
             OpTier::Guard,
             Opcode::GuardNull,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_null(),
         ))
     }
 
-    fn guard_heap() -> Oref {
-        Oref::new(Op::new_unary(
-            "guard_heap",
+    fn guard_ptr() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "guard_ptr",
             OpTier::Guard,
-            Opcode::GuardHeap,
+            Opcode::GuardPtr,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_ptr(),
         ))
     }
 
     fn guard_str() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_str",
             OpTier::Guard,
             Opcode::GuardStr,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_str(),
         ))
     }
 
     fn guard_list() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_list",
             OpTier::Guard,
             Opcode::GuardList,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_list(),
         ))
     }
 
     fn guard_object() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_object",
             OpTier::Guard,
             Opcode::GuardObject,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_object(),
         ))
     }
 
     fn guard_function() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_function",
             OpTier::Guard,
             Opcode::GuardFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_function(),
         ))
     }
 
     fn guard_nfunction() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_nfunction",
             OpTier::Guard,
             Opcode::GuardNFunction,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_nfunction(),
         ))
     }
 
     fn guard_iter() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_iter",
             OpTier::Guard,
             Opcode::GuardIter,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_iter(),
         ))
     }
 
     fn guard_true() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_true",
             OpTier::Guard,
             Opcode::GuardTrue,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn guard_false() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_false",
             OpTier::Guard,
             Opcode::GuardFalse,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn guard_i64_not_zero() -> Oref {
-        Oref::new(Op::new_unary(
+        Oref::new(Op::new_unary_type(
             "guard_i64_not_zero",
             OpTier::Guard,
             Opcode::GuardI64NotZero,
             false,
             false,
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(), // this opcode just means all i64 except 0 in set theory
+        ))
+    }
+
+    // =============================================================
+    // (((Trap)))
+    // =============================================================
+    fn trap_int() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_int",
+            OpTier::Trap,
+            Opcode::TrapInt,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_int(),
+        ))
+    }
+
+    fn trap_real() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_real",
+            OpTier::Trap,
+            Opcode::TrapReal,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_real(),
+        ))
+    }
+
+    fn trap_boolean() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_boolean",
+            OpTier::Trap,
+            Opcode::TrapBoolean,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_boolean(),
+        ))
+    }
+
+    fn trap_null() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_null",
+            OpTier::Trap,
+            Opcode::TrapNull,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_null(),
+        ))
+    }
+
+    fn trap_ptr() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_ptr",
+            OpTier::Trap,
+            Opcode::TrapPtr,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_ptr(),
+        ))
+    }
+
+    fn trap_str() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_str",
+            OpTier::Trap,
+            Opcode::TrapStr,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_str(),
+        ))
+    }
+
+    fn trap_list() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_list",
+            OpTier::Trap,
+            Opcode::TrapList,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_list(),
+        ))
+    }
+
+    fn trap_object() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_object",
+            OpTier::Trap,
+            Opcode::TrapObject,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_object(),
+        ))
+    }
+
+    fn trap_function() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_function",
+            OpTier::Trap,
+            Opcode::TrapFunction,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_function(),
+        ))
+    }
+
+    fn trap_nfunction() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_nfunction",
+            OpTier::Trap,
+            Opcode::TrapNFunction,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_nfunction(),
+        ))
+    }
+
+    fn trap_iter() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_iter",
+            OpTier::Trap,
+            Opcode::TrapIter,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_iter(),
+        ))
+    }
+
+    fn trap_true() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_true",
+            OpTier::Trap,
+            Opcode::TrapTrue,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_boolean(),
+        ))
+    }
+
+    fn trap_false() -> Oref {
+        Oref::new(Op::new_unary_type(
+            "trap_false",
+            OpTier::Trap,
+            Opcode::TrapFalse,
+            false,
+            false,
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
@@ -2149,26 +2705,26 @@ impl Op {
     // (((Placeholder)))
     // =============================================================
     fn placeholder() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "placeholder",
             OpTier::Placeholder,
             Opcode::Placeholder,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn loop_iv_placeholder() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "loop_iv_placeholder",
             OpTier::Placeholder,
             Opcode::LoopIVPlaceholder,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
@@ -2176,25 +2732,25 @@ impl Op {
     // (((Pseudo)))
     // =============================================================
     fn snapshot() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "snapshot",
             OpTier::Snapshot,
             Opcode::Snapshot,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn restore_cell() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "restore_cell",
             OpTier::Snapshot,
             Opcode::RestoreCell,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
@@ -2272,203 +2828,203 @@ impl Op {
     }
 
     fn rv_list_create() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_list_create",
             OpTier::Rval,
             Opcode::RvListCreate,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_list_add() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_list_add",
             OpTier::Rval,
             Opcode::RvListAdd,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_object_create() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_object_create",
             OpTier::Rval,
             Opcode::RvObjectCreate,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn rv_object_add() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_object_add",
             OpTier::Rval,
             Opcode::RvObjectAdd,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     // iterator
     fn rv_iterator_new() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_iterator_new",
             OpTier::Rval,
             Opcode::RvIteratorNew,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_iterator_has() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_iterator_has",
             OpTier::Rval,
             Opcode::RvIteratorHas,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_iterator_next() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_iterator_next",
             OpTier::Rval,
             Opcode::RvIteratorNext,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_iterator_value() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_iterator_value",
             OpTier::Rval,
             Opcode::RvIteratorValue,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_load_global() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_load_global",
             OpTier::Rval,
             Opcode::RvLoadGlobal,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn rv_set_global() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_set_global",
             OpTier::Rval,
             Opcode::RvSetGlobal,
             true,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_load_upvalue() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_load_upvalue",
             OpTier::Rval,
             Opcode::RvLoadUpvalue,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn rv_set_upvalue() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_set_global",
             OpTier::Rval,
             Opcode::RvSetUpvalue,
             true,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_mem_index_load() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_mem_index_load",
             OpTier::Rval,
             Opcode::RvMemIndexLoad,
             true,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn rv_mem_index_store() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_mem_index_store",
             OpTier::Rval,
             Opcode::RvMemIndexStore,
             true,
             false,
             ParamLimits::Limit(3),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_mem_dot_load() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_mem_dot_load",
             OpTier::Rval,
             Opcode::RvMemDotLoad,
             true,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
     fn rv_mem_dot_store() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_mem_dot_store",
             OpTier::Rval,
             Opcode::RvMemDotStore,
             true,
             false,
             ParamLimits::Limit(3),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     // conversion
     fn rv_to_string() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_to_string",
             OpTier::Rval,
             Opcode::RvToString,
             true,
             true,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
@@ -2476,112 +3032,112 @@ impl Op {
         // To boolean operation will never fail, so we treat it as none side
         // effect, to_string operation may fail which requires checkpoint, so
         // it has side effect
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_to_boolean",
             OpTier::Rval,
             Opcode::RvToBoolean,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_phi() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_phi",
             OpTier::Phi,
             Opcode::RvPhi,
             false,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_param() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_param",
             OpTier::Rval,
             Opcode::RvParam,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     // Builtins, the builtin will be lowered into the corresponding intrinsic
     // during builtin lower phase.
     fn rv_assert1() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_assert1",
             OpTier::Rval,
             Opcode::RvAssert1,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_assert2() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_assert1",
             OpTier::Rval,
             Opcode::RvAssert2,
             true,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_trace() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_trace",
             OpTier::Rval,
             Opcode::RvTrace,
             true,
             false,
             ParamLimits::Any,
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_typeof() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_typeof",
             OpTier::Rval,
             Opcode::RvTypeof,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_sizeof() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_sizeof",
             OpTier::Rval,
             Opcode::RvSizeof,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn rv_halt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "rv_halt",
             OpTier::Rval,
             Opcode::RvHalt,
             true,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
@@ -2591,518 +3147,561 @@ impl Op {
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
     fn i64_add() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_add",
             OpTier::Mid,
             Opcode::I64Add,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn i64_sub() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_sub",
             OpTier::Mid,
             Opcode::I64Sub,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn i64_mul() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_sub",
             OpTier::Mid,
             Opcode::I64Mul,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn i64_div() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_div",
             OpTier::Mid,
             Opcode::I64Div,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn i64_pow() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_pow",
             OpTier::Mid,
             Opcode::I64Pow,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn i64_mod() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_mod",
             OpTier::Mid,
             Opcode::I64Mod,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn f64_add() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_add",
             OpTier::Mid,
             Opcode::F64Add,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn f64_sub() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_sub",
             OpTier::Mid,
             Opcode::F64Sub,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn f64_mul() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_sub",
             OpTier::Mid,
             Opcode::F64Mul,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn f64_div() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_div",
             OpTier::Mid,
             Opcode::F64Div,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn f64_pow() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_pow",
             OpTier::Mid,
             Opcode::F64Pow,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn f64_mod() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_mod",
             OpTier::Mid,
             Opcode::F64Mod,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn i64_eq() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_eq",
             OpTier::Mid,
             Opcode::I64Eq,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_ne() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_ne",
             OpTier::Mid,
             Opcode::I64Ne,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_lt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_lt",
             OpTier::Mid,
             Opcode::I64Lt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_le() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_le",
             OpTier::Mid,
             Opcode::I64Le,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_gt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_gt",
             OpTier::Mid,
             Opcode::I64Gt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_ge() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_ge",
             OpTier::Mid,
             Opcode::I64Ge,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_eq() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_eq",
             OpTier::Mid,
             Opcode::F64Eq,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_ne() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_ne",
             OpTier::Mid,
             Opcode::F64Ne,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_lt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_lt",
             OpTier::Mid,
             Opcode::F64Lt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_le() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_le",
             OpTier::Mid,
             Opcode::F64Le,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_gt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_gt",
             OpTier::Mid,
             Opcode::F64Gt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_ge() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_ge",
             OpTier::Mid,
             Opcode::F64Ge,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_eq() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_eq",
             OpTier::Mid,
             Opcode::StrEq,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_ne() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_ne",
             OpTier::Mid,
             Opcode::StrNe,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_lt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_lt",
             OpTier::Mid,
             Opcode::StrLt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_le() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_le",
             OpTier::Mid,
             Opcode::StrLe,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_gt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_gt",
             OpTier::Mid,
             Opcode::StrGt,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_ge() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_ge",
             OpTier::Mid,
             Opcode::StrGe,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn ptr_eq() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "ptr_eq",
             OpTier::Mid,
             Opcode::PtrEq,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn ptr_ne() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "ptr_ne",
             OpTier::Mid,
             Opcode::PtrNe,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn boolean_eq() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "boolean_eq",
             OpTier::Mid,
             Opcode::BooleanEq,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn boolean_ne() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "boolean_ne",
             OpTier::Mid,
             Opcode::BooleanNe,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn i64_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_to_boolean",
             OpTier::Mid,
             Opcode::I64ToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_to_boolean",
             OpTier::Mid,
             Opcode::F64ToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn str_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "str_to_boolean",
             OpTier::Mid,
             Opcode::StrToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn list_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "list_to_boolean",
             OpTier::Mid,
             Opcode::ListToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn object_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "object_to_boolean",
             OpTier::Mid,
             Opcode::ObjectToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn iter_to_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "iter_to_boolean",
             OpTier::Mid,
             Opcode::IterToBoolean,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
     fn f64_negate() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "f64_negate",
             OpTier::Mid,
             Opcode::F64Negate,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_f64(),
         ))
     }
 
     fn i64_negate() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "i64_negate",
             OpTier::Mid,
             Opcode::I64Negate,
             false,
             false,
             ParamLimits::Limit(2),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_i64(),
         ))
     }
 
     fn flip_boolean() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_type(
             "flip_boolean",
             OpTier::Mid,
             Opcode::FlipBoolean,
             false,
             false,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
+            JType::new_boolean(),
         ))
     }
 
@@ -3112,110 +3711,110 @@ impl Op {
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
     fn cfg_start() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_start",
             OpTier::Cfg,
             Opcode::CfgStart,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_end() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_end",
             OpTier::Cfg,
             Opcode::CfgEnd,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_merge_return() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_merge_return",
             OpTier::Cfg,
             Opcode::CfgMergeReturn,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_merge_halt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_merge_halt",
             OpTier::Cfg,
             Opcode::CfgMergeHalt,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_halt() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_halt",
             OpTier::Cfg,
             Opcode::CfgHalt,
             true,
             true,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_return() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_return",
             OpTier::Cfg,
             Opcode::CfgReturn,
             true,
             true,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_if_cmp() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_if_cmp",
             OpTier::Cfg,
             Opcode::CfgIfCmp,
             true,
             true,
             ParamLimits::Limit(1),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_jump() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_jump",
             OpTier::Cfg,
             Opcode::CfgJump,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 
     fn cfg_loop_back() -> Oref {
-        Oref::new(Op::new(
+        Oref::new(Op::new_untype(
             "cfg_loop_back",
             OpTier::Cfg,
             Opcode::CfgLoopBack,
             true,
             true,
             ParamLimits::Limit(0),
-            MachineFlag {},
+            MachineFlag::new_default(),
         ))
     }
 }
@@ -3256,6 +3855,7 @@ impl Mpool {
 
             op_box_null: Op::box_null(),
 
+            op_box_ptr: Op::box_ptr(),
             op_box_str: Op::box_str(),
             op_box_list: Op::box_list(),
             op_box_object: Op::box_object(),
@@ -3283,7 +3883,7 @@ impl Mpool {
             op_guard_boolean: Op::guard_boolean(),
             op_guard_null: Op::guard_null(),
 
-            op_guard_heap: Op::guard_heap(),
+            op_guard_ptr: Op::guard_ptr(),
             op_guard_str: Op::guard_str(),
             op_guard_list: Op::guard_list(),
             op_guard_object: Op::guard_object(),
@@ -3294,6 +3894,22 @@ impl Mpool {
             op_guard_true: Op::guard_true(),
             op_guard_false: Op::guard_false(),
             op_guard_i64_not_zero: Op::guard_i64_not_zero(),
+
+            // Trap
+            op_trap_int: Op::trap_int(),
+            op_trap_real: Op::trap_real(),
+            op_trap_boolean: Op::trap_boolean(),
+            op_trap_null: Op::trap_null(),
+            op_trap_ptr: Op::trap_ptr(),
+            op_trap_str: Op::trap_str(),
+            op_trap_list: Op::trap_list(),
+
+            op_trap_object: Op::trap_object(),
+            op_trap_function: Op::trap_function(),
+            op_trap_nfunction: Op::trap_nfunction(),
+            op_trap_iter: Op::trap_iter(),
+            op_trap_true: Op::trap_true(),
+            op_trap_false: Op::trap_false(),
 
             // Pesudo nodes
             op_placeholder: Op::placeholder(),
@@ -3586,6 +4202,218 @@ impl Mpool {
         self.watch_node(&x);
         return x;
     }
+
+    // ------------------------------------------------------------------------
+    // Box
+    // ------------------------------------------------------------------------
+    pub fn new_box_i64(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_i64());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_i64), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_i32(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_i32());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_i32), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_i16(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_i16());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_i16), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_i8(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_i16());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_i16), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_u32(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_u32());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_u32), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_u16(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_u16());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_u16), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_u8(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_u8());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_u8), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_f64(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_f64());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_f64), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_true(&mut self, n: Nref, bcpos: BcCtx) -> Nref {
+        let x = Node::new(
+            Oref::clone(&self.op_box_true),
+            self.node_next_id(),
+            bcpos,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_false(&mut self, n: Nref, bcpos: BcCtx) -> Nref {
+        let x = Node::new(
+            Oref::clone(&self.op_box_false),
+            self.node_next_id(),
+            bcpos,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_boolean(
+        &mut self,
+        n: Nref,
+        bcpos: BcCtx,
+        operand: Nref,
+    ) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_boolean());
+
+        let mut x = Node::new(
+            Oref::clone(&self.op_box_boolean),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_null(&mut self, n: Nref, bcpos: BcCtx) -> Nref {
+        let x = Node::new(
+            Oref::clone(&self.op_box_null),
+            self.node_next_id(),
+            bcpos,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_ptr(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_ptr());
+
+        let mut x =
+            Node::new(Oref::clone(&self.op_box_ptr), self.node_next_id(), bcpos);
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_str(&mut self, n: Nref, bcpos: BcCtx, operand: Nref) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_str());
+
+        let mut x = Node::new(
+            Oref::clone(&self.op_box_str),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_list(
+        &mut self,
+        n: Nref,
+        bcpos: BcCtx,
+        operand: Nref,
+    ) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_list());
+
+        let mut x = Node::new(
+            Oref::clone(&self.op_box_list),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_object(
+        &mut self,
+        n: Nref,
+        bcpos: BcCtx,
+        operand: Nref,
+    ) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_object());
+
+        let mut x = Node::new(
+            Oref::clone(&self.op_box_object),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_box_iter(
+        &mut self,
+        n: Nref,
+        bcpos: BcCtx,
+        operand: Nref,
+    ) -> Nref {
+        debug_assert!(operand.borrow().op.the_type.is_iter());
+
+        let mut x = Node::new(
+            Oref::clone(&self.op_box_iter),
+            self.node_next_id(),
+            bcpos,
+        );
+        Node::add_value(&mut x, operand);
+        self.watch_node(&x);
+        return x;
+    }
+
+    // ------------------------------------------------------------------------
+    // Rval
+    // ------------------------------------------------------------------------
 
     pub fn new_rv_node_unary(
         &mut self,
@@ -4150,9 +4978,7 @@ impl Mpool {
     }
 
     // -------------------------------------------------------------------------
-    // -------------------------------------------------------------------------
     //                          Control Flow Graph
-    // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
     pub fn new_cfg_start(&mut self, bcid: BcCtx) -> Nref {
         let n = Node::new(

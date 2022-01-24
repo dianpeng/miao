@@ -1,29 +1,43 @@
 use crate::ic::feedback::*;
 use crate::ic::ftype::*;
-use crate::jit::iter::*;
 use crate::jit::j::*;
 use crate::jit::node::*;
 use crate::jit::pass::*;
 
-// Our type feedback will only be related to the operation but not the value. The
-// typer will propagate the feedback collected type back to the value itself. It
-// allows for type propagation if certain type observer site is not capable of
-// collecting the type.
+// Typer process.
+//
+//   This process simply does a progressive typping of the IR graph to catch
+//   up situation where one operation site doesn't have enough herusitic to
+//   guess the type of a value but another places does
 //
 //   Example as following :
 //
-//    feedback(+)
+//   let i = 0;
+//   let v = global_a;
+//   let out = 0;
 //
-//      [+] ----> [A] <------ [-] ------- [C]
-//       |
-//       |                 feedback(-)
-//      [B]
+//   for i < 100000 {
+//     i += 1;
 //
-//  If feedback(+) somehow is not able to collect enough type feedback, but
-//  feedback(-) can, so A can still be decorated with speculative type guess
-//  which later on turns into a guard instruction for speculative code generation
+//     if i <= 5 {
+//       out += v + 10; // v's type cannot be guessed since it is only been
+//                      // executed 5 times
+//     }
 //
-// This typer pass just provides a possible type pass for later lower pass.
+//     out += v + 20; // here, the add operation will be executed multiple
+//                    // times to learn the type of v herusitically, so v's
+//                    // type can be inferred here
+//   }
+//
+//   Since the graph is SSA styled, so v will not be modified without either
+//   using memory or runtime API, which is rarely happened from user's viewpoint,
+//   and rest of the explicit modification will be catched up by the IR. Anyway,
+//   the type_hint propagation will be meaningful for us.
+//
+//   Therefore, the v's type is essentially mostly not modified, therefore, v's
+//   type should be propagated to the v+10 sites if applicable. Additionally,
+//   the type should be consistent, which means from different site, the type
+//   observation should be always the same or unknown.
 
 #[allow(dead_code)]
 pub struct Typer {
@@ -77,175 +91,172 @@ impl Typer {
             return true;
         }
 
-        return match feedback {
-            FType::Int => *collected == MainType::Int,
-            FType::Real => *collected == MainType::Real,
-            FType::Boolean => *collected == MainType::Boolean,
-            FType::Null => *collected == MainType::Null,
-            FType::Str => *collected == MainType::Str,
-            FType::List => *collected == MainType::List,
-            FType::Object => *collected == MainType::Object,
-            FType::Function => *collected == MainType::Function,
-            FType::NFunction => *collected == MainType::NFunction,
-            FType::Iter => *collected == MainType::Iter,
-            FType::Unknown => *collected == MainType::Unknown,
-        };
+        let should_type = MainType::map_ftype(feedback);
+        return should_type == *collected;
     }
 
-    fn type_propagate(feedback: &FType, n: &mut Nref) -> bool {
-        if !n.borrow().the_type.is_unknown() {
+    // perform type propagation.
+    //   1. the feedback type is observed from the feedback vector
+    //   2. and the type_hint is the existed type for the verify node
+    //
+    // The logic is simple:
+    //   1. if the type_hint exists, ie not Unknown, then we set the feedback
+    //      type to the type_hint
+    //
+    //   2. If the type_hint contains valid type, then we do verification to
+    //      check whether the type hint is consistent or not.
+
+    fn type_propagate(feedback: &FType, type_hint: &mut MainType) -> bool {
+        if *type_hint == MainType::Unknown {
+            *type_hint = MainType::map_ftype(feedback);
             return true;
+        } else {
+            return Typer::type_match(feedback, type_hint);
         }
-        n.borrow_mut().the_type = JType::map_ftype(feedback);
-        return true;
     }
 
     fn feedback_at(&self, x: u32) -> Feedback {
         return self.f.borrow().func.borrow().fd.index(x as usize).clone();
     }
 
-    fn unary_typer(&mut self, n: Nref) {}
+    fn binary_lhs_at(&self, n: &Nref) -> Option<FType> {
+        let f = self.feedback_at(n.borrow().bc.bc);
+        return match f {
+            Feedback::Binary(b) => Option::Some(b.lhs_type),
+            _ => Option::None,
+        };
+    }
 
-    fn arithmetic_typer(&mut self, n: Nref) {
+    fn binary_rhs_at(&self, n: &Nref) -> Option<FType> {
+        let f = self.feedback_at(n.borrow().bc.bc);
+        return match f {
+            Feedback::Binary(b) => Option::Some(b.rhs_type),
+            _ => Option::None,
+        };
+    }
+
+    fn unary_at(&self, n: &Nref) -> Option<FType> {
+        let f = self.feedback_at(n.borrow().bc.bc);
+        return match f {
+            Feedback::Unary(b) => Option::Some(b.opr_type),
+            _ => Option::None,
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    //
+    // typping process.
+    //
+    //   Generally, typping works in PO and it tries to decorate the node for
+    //   whatever information it gathers from the runtime and rules been applied
+    //   accordingly.
+
+    fn unary_typer(&mut self, _: Nref) {}
+
+    fn arithmetic_typer(&mut self, n: Nref) -> Option<()> {
         debug_assert!(n.borrow().is_value_binary());
 
-        let mut lhs = n.borrow().lhs();
-        let mut rhs = n.borrow().rhs();
+        let lhs = n.borrow().lhs();
+        let rhs = n.borrow().rhs();
 
-        let lhs_type = lhs.borrow().the_type.clone();
-        let rhs_type = rhs.borrow().the_type.clone();
+        let lhs_feedback = self.binary_lhs_at(&n)?;
+        let rhs_feedback = self.binary_rhs_at(&n)?;
 
-        let mut out_mtype = MainType::Unknown;
-        let mut out_stype = SubType::Invalid;
+        // (0) using feedback type to validate the type of its operand and do
+        //     type propagation accordingly
+        let lhs_type = {
+            let mut t = lhs.borrow().type_hint.clone();
+            if !Typer::type_propagate(&lhs_feedback, &mut t) {
+                return Option::None;
+            }
+            lhs.borrow_mut().type_hint = t.clone();
+            t
+        };
 
-        // (0) try to reason the type from the lhs and rhs value
-        match n.borrow().op.op {
-            // arithmetic operations, type is directly deduced
+        let rhs_type = {
+            let mut t = rhs.borrow().type_hint.clone();
+            if !Typer::type_propagate(&rhs_feedback, &mut t) {
+                return Option::None;
+            }
+            rhs.borrow_mut().type_hint = t.clone();
+            t
+        };
+
+        // (1) reason about the arithmetic result's type based on the lhs/rhs
+        //     type
+        let out_type = match n.borrow().op.op {
             Opcode::RvAdd
             | Opcode::RvSub
             | Opcode::RvMul
             | Opcode::RvDiv
-            | Opcode::RvPow => {
-                match (&lhs_type.main, &rhs_type.main) {
-                    (MainType::Int, MainType::Int) => {
-                        out_mtype = MainType::Int;
-                        out_stype = SubType::I64;
-                    }
+            | Opcode::RvPow => match (&lhs_type, &rhs_type) {
+                (MainType::Int, MainType::Int) => MainType::Int,
+                (MainType::Real, MainType::Real) => MainType::Real,
+                (MainType::Int, MainType::Real)
+                | (MainType::Real, MainType::Int) => MainType::Real,
 
-                    (MainType::Real, MainType::Real) => {
-                        out_mtype = MainType::Real;
-                        out_stype = SubType::F64;
-                    }
-
-                    (MainType::Str, MainType::Str) => {
-                        if n.borrow().op.op == Opcode::RvAdd {
-                            out_mtype = MainType::Str;
-                            out_stype = SubType::Invalid;
-                        }
-                    }
-
-                    (MainType::Int, MainType::Real)
-                    | (MainType::Real, MainType::Int) => {
-                        out_mtype = MainType::Real;
-                        out_stype = SubType::F64;
-                    }
-                    _ => (),
-                };
-            }
-
-            _ => (),
-        };
-
-        // (1) try feedback vector to collect runtime feedback, notes this
-        //     value may be conflicted with existed reasoning.
-        let feedback_type = self.feedback_at(n.borrow().bc.bc);
-
-        match feedback_type {
-            Feedback::Binary(f) => {
-                if !Typer::type_match(&f.lhs_type, &lhs_type.main)
-                    || !Typer::type_match(&f.rhs_type, &rhs_type.main)
-                {
-                    out_mtype = MainType::Unknown;
-                    out_stype = SubType::Invalid;
-                } else {
-                    if out_mtype == MainType::Unknown {
-                        debug_assert!(out_stype == SubType::Invalid);
-
-                        // Propagate the types to its LHS and RHS if applicable
-                        if Typer::type_propagate(&f.lhs_type, &mut lhs)
-                            && Typer::type_propagate(&f.rhs_type, &mut rhs)
-                        {
-                            match (f.lhs_type, f.rhs_type) {
-                                (FType::Int, FType::Int) => {
-                                    out_mtype = MainType::Int;
-                                    out_stype = SubType::I64;
-                                }
-
-                                (FType::Real, FType::Real) => {
-                                    out_mtype = MainType::Int;
-                                    out_stype = SubType::I64;
-                                }
-
-                                (FType::Str, FType::Str) => {
-                                    if n.borrow().op.op == Opcode::RvAdd {
-                                        out_mtype = MainType::Str;
-                                        out_stype = SubType::Invalid;
-                                    }
-                                }
-
-                                (FType::Int, FType::Real)
-                                | (FType::Real, FType::Int) => {
-                                    out_mtype = MainType::Real;
-                                    out_stype = SubType::F64;
-                                }
-
-                                _ => (),
-                            };
-                        }
+                (MainType::Str, MainType::Str) => {
+                    if n.borrow().op.op == Opcode::RvAdd {
+                        MainType::Str
+                    } else {
+                        MainType::Unknown
                     }
                 }
-            }
-            _ => (),
+                _ => MainType::Unknown,
+            },
+
+            _ => MainType::Unknown,
         };
 
-        // Lastly assign the type back to the current nodes
-        n.borrow_mut().the_type = JType {
-            main: out_mtype,
-            sub: out_stype,
-        };
+        n.borrow_mut().type_hint = out_type;
+        return Option::Some(());
     }
 
-    fn comparison_typer(&mut self, n: Nref) {
+    fn comparison_typer(&mut self, n: Nref) -> Option<()> {
         debug_assert!(n.borrow().is_value_binary());
 
-        let mut lhs = n.borrow().lhs();
-        let mut rhs = n.borrow().rhs();
+        let lhs = n.borrow().lhs();
+        let rhs = n.borrow().rhs();
 
-        let lhs_type = lhs.borrow().the_type.clone();
-        let rhs_type = rhs.borrow().the_type.clone();
+        let lhs_feedback = self.binary_lhs_at(&n)?;
+        let rhs_feedback = self.binary_rhs_at(&n)?;
 
-        let mut out_mtype = MainType::Unknown;
-        let mut out_stype = SubType::Invalid;
+        // (0) using feedback type to validate the type of its operand and do
+        //     type propagation accordingly
+        let lhs_type = {
+            let mut t = lhs.borrow().type_hint.clone();
+            if !Typer::type_propagate(&lhs_feedback, &mut t) {
+                return Option::None;
+            }
+            lhs.borrow_mut().type_hint = t.clone();
+            t
+        };
 
-        // (0) try to reason the type from the lhs and rhs value
-        match n.borrow().op.op {
-            // comparison operations
+        let rhs_type = {
+            let mut t = rhs.borrow().type_hint.clone();
+            if !Typer::type_propagate(&rhs_feedback, &mut t) {
+                return Option::None;
+            }
+            rhs.borrow_mut().type_hint = t.clone();
+            t
+        };
+
+        // (1) reason about the arithmetic result's type based on the lhs/rhs
+        //     type
+        let out_type = match n.borrow().op.op {
             Opcode::RvEq
             | Opcode::RvNe
             | Opcode::RvLt
             | Opcode::RvLe
             | Opcode::RvGt
             | Opcode::RvGe => {
-                match (&lhs_type.main, &rhs_type.main) {
+                match (&lhs_type, &rhs_type) {
                     // Can work with eq/ne/lt/le/gt/ge
                     (MainType::Int, MainType::Int)
                     | (MainType::Int, MainType::Real)
                     | (MainType::Real, MainType::Int)
                     | (MainType::Real, MainType::Real)
-                    | (MainType::Str, MainType::Str) => {
-                        out_mtype = MainType::Boolean;
-                        out_stype = SubType::Invalid;
-                    }
+                    | (MainType::Str, MainType::Str) => MainType::Boolean,
 
                     // Can work with eq/ne
                     (MainType::List, MainType::List)
@@ -258,76 +269,20 @@ impl Typer {
                         if n.borrow().op.op == Opcode::RvEq
                             || n.borrow().op.op == Opcode::RvNe
                         {
-                            out_mtype = MainType::Boolean;
-                            out_stype = SubType::Invalid;
+                            MainType::Boolean
+                        } else {
+                            MainType::Unknown
                         }
                     }
 
-                    _ => (),
-                };
-            }
-
-            _ => (),
-        };
-
-        // (1) try feedback vector to collect runtime feedback, notes this
-        //     value may be conflicted with existed reasoning.
-        let feedback_type = self.feedback_at(n.borrow().bc.bc);
-
-        match feedback_type {
-            Feedback::Binary(f) => {
-                if !Typer::type_match(&f.lhs_type, &lhs_type.main)
-                    || !Typer::type_match(&f.rhs_type, &rhs_type.main)
-                {
-                    out_mtype = MainType::Unknown;
-                    out_stype = SubType::Invalid;
-                } else {
-                    if out_mtype == MainType::Unknown {
-                        debug_assert!(out_stype == SubType::Invalid);
-
-                        // Propagate the types to its LHS and RHS if applicable
-                        if Typer::type_propagate(&f.lhs_type, &mut lhs)
-                            && Typer::type_propagate(&f.rhs_type, &mut rhs)
-                        {
-                            match (f.lhs_type, f.rhs_type) {
-                                (FType::Int, FType::Int)
-                                | (FType::Int, FType::Real)
-                                | (FType::Real, FType::Int)
-                                | (FType::Real, FType::Real)
-                                | (FType::Str, FType::Str) => {
-                                    out_mtype = MainType::Boolean;
-                                    out_stype = SubType::Invalid;
-                                }
-
-                                // Can work with eq/ne
-                                (FType::List, FType::List)
-                                | (FType::Object, FType::Object)
-                                | (FType::Function, FType::Function)
-                                | (FType::NFunction, FType::NFunction)
-                                | (FType::Iter, FType::Iter)
-                                | (FType::Null, FType::Null)
-                                | (FType::Boolean, FType::Boolean) => {
-                                    if n.borrow().op.op == Opcode::RvEq
-                                        || n.borrow().op.op == Opcode::RvNe
-                                    {
-                                        out_mtype = MainType::Boolean;
-                                        out_stype = SubType::Invalid;
-                                    }
-                                }
-
-                                _ => (),
-                            };
-                        }
-                    }
+                    _ => MainType::Unknown,
                 }
             }
-            _ => (),
+
+            _ => MainType::Unknown,
         };
 
-        // Lastly assign the type back to the current nodes
-        n.borrow_mut().the_type = JType {
-            main: out_mtype,
-            sub: out_stype,
-        };
+        n.borrow_mut().type_hint = out_type;
+        return Option::Some(());
     }
 }

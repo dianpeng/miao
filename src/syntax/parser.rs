@@ -2257,7 +2257,7 @@ impl Parser {
 
     fn parse_list(&mut self) -> bool {
         self.next();
-        let mut label = self.bc().label_d(self.dbg());
+        let label = self.bc().label_d(self.dbg());
 
         let mut c = 0;
         while self.token != Token::RSqr {
@@ -2283,7 +2283,7 @@ impl Parser {
 
     fn parse_object(&mut self) -> bool {
         self.next();
-        let mut label = self.bc().label_d(self.dbg());
+        let label = self.bc().label_d(self.dbg());
         let mut c = 0;
 
         while self.token != Token::RBra {

@@ -30,7 +30,7 @@ fn p_op(x: &Oref, nid: Nid) -> String {
         OpTier::Bval => "gold",
         OpTier::Rval => "deepskyblue3",
         OpTier::Mid => "deepskyblue2",
-        OpTier::Arch => "deepskyblue1",
+        OpTier::Low => "deepskyblue1",
         _ => "gray2",
     };
 

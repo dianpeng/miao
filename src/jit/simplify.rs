@@ -1,4 +1,3 @@
-use crate::jit::iter::*;
 use crate::jit::j::*;
 use crate::jit::node::*;
 use crate::jit::pass::*;
@@ -62,18 +61,47 @@ impl RvSimplify {
     }
 
     fn simplify_phi(&mut self, mut x: Nref) {
-        if !Node::simplify_phi(&mut x) {
-            debug_assert!(x.borrow().is_phi());
-            if x.borrow().value.len() == 2 {
-                debug_assert!(x.borrow().cfg.len() == 2);
+        debug_assert!(x.borrow().is_phi());
 
-                // if both value of the phi are the same, then just replace phi
-                // to be the value it has
-                if Nref::ptr_eq(&x.borrow().value[0], &x.borrow().value[1]) {
-                    let rep = x.borrow().value[0].clone();
-                    Node::replace(&mut x, rep);
-                    x.borrow_mut().mark_dead();
+        // (0) check wether the phi has placeholder, if so just remove the
+        //     placeholder
+        {
+            let len = x.borrow().value.len();
+            let mut i = 0;
+            let mut death_list = Vec::<usize>::new();
+
+            while i < len {
+                if x.borrow_mut().value[i].borrow().is_placeholder() {
+                    death_list.push(i);
                 }
+                i += 1;
+            }
+
+            // notes, every removal of value will shrink the position of each
+            // value component
+            let mut offset = 0;
+            for v in death_list.iter() {
+                Node::remove_phi_value(&mut x, *v - offset);
+                offset += 1;
+            }
+        }
+
+        // (1) If the current node has become singleton, then just make the
+        //     phi to be replaced by its value
+        if x.borrow().value.len() == 1 {
+            debug_assert!(x.borrow().cfg.len() == 1);
+            let v = x.borrow().value[0].clone();
+            Node::replace(&mut x, v);
+        } else if x.borrow().value.len() == 2 {
+            // (2) If the phi node has 2 value, and they are identical, then just
+            //     eliminiate the phi here.
+            debug_assert!(x.borrow().cfg.len() == 2);
+
+            // if both value of the phi are the same, then just replace phi
+            // to be the value it has
+            if Nref::ptr_eq(&x.borrow().value[0], &x.borrow().value[1]) {
+                let rep = x.borrow().value[0].clone();
+                Node::replace_and_dispose(&mut x, rep);
             }
         }
     }

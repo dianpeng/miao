@@ -1524,11 +1524,7 @@ impl FBuilder {
     // patch all the phi list to remove those have dangling loop_iv_placeholder
     // node. If a phi has loop_iv_placeholder, it means the phi needs to remove
     // that loop_iv_placeholder
-    fn patch_phi_list(&mut self) {
-        for mut x in self.phi_list.iter_mut() {
-            Node::simplify_phi(&mut x);
-        }
-    }
+    fn patch_phi_list(&mut self) {}
 
     fn build(&mut self) -> bool {
         // (0) prepare the building, creating all the BB and Env object
@@ -1637,7 +1633,6 @@ impl FBuilder {
 mod fbuilder_tests {
     use super::*;
     use crate::heap::heap::*;
-    use crate::jit::j::*;
     use crate::jit::node_print::*;
     use crate::syntax::parser::*;
 

@@ -1,21 +1,29 @@
-use crate::jit::j::*;
 use crate::jit::node::*;
 use crate::jit::pass::*;
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
-use std::hash::hasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 
-#[derive(Hash, PartialEq)]
+// Global Value Numbering
+//
+// for us GVN is easy to perform since we know that any node without side effect
+// can be part of GVN, and then we just do this to dedup sub-expression, that's
+// it. Each node's hash will be implemented locally here and just use rust's
+// hash set will be fine
+
 struct GVNRcd {
     node: Nref,
 }
 
 impl Hash for GVNRcd {
-    fn hash<H>(&self, _: &mut H)
+    fn hash<H>(&self, h: &mut H)
     where
         H: Hasher,
     {
-        return calc_node_hash(&self.node).unwrap();
+        h.write_u64(calc_node_hash(&self.node).unwrap());
+        h.finish();
     }
 }
 
@@ -24,6 +32,8 @@ impl PartialEq for GVNRcd {
         return eq_node(&self.node, &other.node).unwrap();
     }
 }
+
+impl Eq for GVNRcd {}
 
 impl GVN {
     fn try_dedup(&mut self, n: Nref) -> Option<Nref> {
@@ -35,30 +45,25 @@ impl GVN {
         }) {
             Option::Some(vv) => {
                 // the node do exist, then just returns that nodes
-                return Option::Some(Nref::clone(vv));
+                return Option::Some(Nref::clone(&vv.node));
             }
             _ => (),
         };
 
         // do the insertion
-        assert!(self.h.insert(Nref::clone(&n)));
+        assert!(self.h.insert(GVNRcd {
+            node: Nref::clone(&n)
+        }));
         return Option::None;
     }
 }
-
-// Global Value Numbering
-//
-// for us GVN is easy to perform since we know that any node without side effect
-// can be part of GVN, and then we just do this to dedup sub-expression, that's
-// it. Each node's hash will be implemented locally here and just use rust's
-// hash set will be fine
 
 pub struct GVN {
     h: HashSet<GVNRcd>,
 }
 
 impl NodePass for GVN {
-    fn run_node(&mut self, n: Nref) -> PassResult {
+    fn run_node(&mut self, mut n: Nref) -> PassResult {
         match self.try_dedup(Nref::clone(&n)) {
             Option::Some(v) => {
                 // de-duplicate the node here
@@ -78,11 +83,13 @@ fn should_gvn(n: &Nref) -> bool {
     if n.borrow().op.tier == OpTier::Bval
         || n.borrow().op.tier == OpTier::Rval
         || n.borrow().op.tier == OpTier::Guard
+        || n.borrow().op.tier == OpTier::Trap
+        || n.borrow().op.tier == OpTier::Error
         || n.borrow().op.tier == OpTier::Mid
-        || n.borrow().op.tier == OpTier::Arch
+        || n.borrow().op.tier == OpTier::Low
         || n.borrow().op.tier == OpTier::Imm
     {
-        debug_assert!(!n.borrow().has_control());
+        debug_assert!(!n.borrow().has_cfg());
         debug_assert!(!n.borrow().has_effect());
         return true;
     }
@@ -96,7 +103,7 @@ fn bailout_from_gvn(n: &Nref) -> bool {
         return true;
     }
 
-    debug_assert!(!n.borrow().has_control());
+    debug_assert!(!n.borrow().has_cfg());
     debug_assert!(!n.borrow().has_effect());
 
     for v in n.borrow().value.iter() {
@@ -115,13 +122,13 @@ fn eq_node(lhs: &Nref, rhs: &Nref) -> Option<bool> {
         return Option::None;
     }
 
-    debug_assert!(!n.borrow().has_control());
-    debug_assert!(!n.borrow().has_effect());
+    debug_assert!(!lhs.borrow().has_cfg());
+    debug_assert!(!rhs.borrow().has_effect());
 
-    let lhs_op = lhs.borrow().op;
-    let rhs_op = rhs.borrow().op;
+    let lhs_op = lhs.borrow().op.op.clone();
+    let rhs_op = rhs.borrow().op.op.clone();
 
-    if lhs_op.op != rh_op.op {
+    if lhs_op != rhs_op {
         return Option::Some(false);
     }
 
@@ -130,8 +137,8 @@ fn eq_node(lhs: &Nref, rhs: &Nref) -> Option<bool> {
     }
 
     let len = lhs.borrow().value.len();
-    for i in (0..len).iter() {
-        if !eq_node(lhs.borrow().value[i], rhs.borrow().value[i])? {
+    for i in 0..len {
+        if !eq_node(&lhs.borrow().value[i], &rhs.borrow().value[i])? {
             return Option::Some(false);
         }
     }
@@ -152,8 +159,8 @@ fn calc_node_binary_hash(n: &Nref) -> Option<u64> {
     let lhs = n.borrow().lhs();
     let rhs = n.borrow().rhs();
 
-    let lhs_hash = calc_node_hash(lhs)?;
-    let rhs_hash = calc_node_hash(rhs)?;
+    let lhs_hash = calc_node_hash(&lhs)?;
+    let rhs_hash = calc_node_hash(&rhs)?;
 
     let mut hasher = DefaultHasher::new();
 
@@ -166,7 +173,7 @@ fn calc_node_binary_hash(n: &Nref) -> Option<u64> {
 
 fn calc_node_unary_hash(n: &Nref) -> Option<u64> {
     let una = n.borrow().una();
-    let una_hash = calc_node_hash(lhs)?;
+    let una_hash = calc_node_hash(&una)?;
 
     let mut hasher = DefaultHasher::new();
 
@@ -188,25 +195,40 @@ fn calc_node_nary_hash(n: &Nref) -> Option<u64> {
 
 fn calc_node_guard_hash(n: &Nref) -> Option<u64> {
     debug_assert!(n.borrow().is_guard());
-    debug_assert!(n.borrow().is_unary());
+    debug_assert!(n.borrow().value_len() == 1);
+
+    return calc_node_unary_hash(n);
+}
+
+fn calc_node_trap_hash(n: &Nref) -> Option<u64> {
+    debug_assert!(n.borrow().is_trap());
+    debug_assert!(n.borrow().value_len() == 1);
+
+    return calc_node_unary_hash(n);
+}
+
+fn calc_node_error_hash(n: &Nref) -> Option<u64> {
+    debug_assert!(n.borrow().is_error());
+    debug_assert!(n.borrow().value_len() == 1);
+
     return calc_node_unary_hash(n);
 }
 
 fn calc_node_imm_hash(n: &Nref) -> Option<u64> {
-    let mut hasher = Default::Hasher::new();
-    match n.borrow().imm {
-        Imm::Index(v) => hasher.write_u32(v),
-        Imm::ImmU32(v) => hasher.write_u32(v),
-        Imm::ImmU16(v) => hasher.write_u16(v),
-        Imm::ImmU8(v) => hasher.write_u8(v),
-        Imm::ImmI64(v) => hasher.write_i64(v),
-        Imm::ImmI32(v) => hasher.write_i32(v),
-        Imm::ImmI16(v) => hasher.write_i16(v),
-        Imm::ImmI8(v) => hasher.write_i8(v),
+    let mut hasher = DefaultHasher::new();
+    match &n.borrow().imm {
+        Imm::Index(v) => hasher.write_u32(*v),
+        Imm::ImmU32(v) => hasher.write_u32(*v),
+        Imm::ImmU16(v) => hasher.write_u16(*v),
+        Imm::ImmU8(v) => hasher.write_u8(*v),
+        Imm::ImmI64(v) => hasher.write_i64(*v),
+        Imm::ImmI32(v) => hasher.write_i32(*v),
+        Imm::ImmI16(v) => hasher.write_i16(*v),
+        Imm::ImmI8(v) => hasher.write_i8(*v),
         Imm::ImmF64(v) => hasher.write(v.to_string().as_bytes()),
-        Imm::ImmBool(v) => hasher.write(v.to_string().as_bytes()),
+        Imm::ImmBoolean(v) => hasher.write(v.to_string().as_bytes()),
         Imm::ImmNull => hasher.write(b"null"),
-        Imm::ImmString(v) => hasher.write(v.as_bytes()),
+        Imm::ImmStr(v) => hasher.write(v.as_bytes()),
 
         _ => {
             unreachable!();
@@ -228,7 +250,7 @@ fn calc_node_hash(n: &Nref) -> Option<u64> {
 
     // anything that has effect or control flow component will NOT be part of the
     // GVN
-    if n.borrow().has_control() || n.borrow().has_effect() {
+    if n.borrow().has_cfg() || n.borrow().has_effect() {
         return Option::None;
     }
 
@@ -329,13 +351,20 @@ fn calc_node_hash(n: &Nref) -> Option<u64> {
         //
         //   1. Immediate
         //   2. Guard
+        //   3. Trap
+        //   4. Error
         //
         _ => {
             match n.borrow().op.tier {
                 OpTier::Guard => {
                     return calc_node_guard_hash(n);
                 }
-
+                OpTier::Trap => {
+                    return calc_node_trap_hash(n);
+                }
+                OpTier::Error => {
+                    return calc_node_error_hash(n);
+                }
                 OpTier::Imm => {
                     return calc_node_imm_hash(n);
                 }

@@ -70,11 +70,11 @@ pub enum Imm {
     ImmI8(i8),
 
     ImmF64(f64),
-    ImmBool(bool),
+    ImmBoolean(bool),
     ImmNull,
 
     // duplicate the string from the string table
-    ImmString(String),
+    ImmStr(String),
 
     Invalid,
 }
@@ -229,6 +229,7 @@ pub enum OpTier {
     Phi,
     Bval,  // box/unbox operations, we will have special phase to lower them
     Guard, // guard operations
+    Error, // error operations
     Trap,  // similar as guard, but will yield an error after deoptimize
     Rval,  // high level operations, ie Rval(standsfor Rust Value, boxed)
     Mid,   // middle tier IR, standsfor none-architecture specific instructions
@@ -259,9 +260,9 @@ pub enum Opcode {
     ImmI16,
     ImmI8,
     ImmF64,
-    ImmBool,
+    ImmBoolean,
     ImmNull,
-    ImmString,
+    ImmStr,
 
     // -------------------------------------------------------------------------
     // Boxing and unboxing operation
@@ -385,6 +386,18 @@ pub enum Opcode {
 
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
+    //                               Error
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    //
+    // Error is a dead end node, similar as return. Will be materialized after
+    // cfg_lower pass to be part of the CFG nodes. It generates an error and
+    // then jumps out and stop the execution of current function
+    ErrorDivZero,
+    ErrorPowNegativeInt,
+
+    // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     //                               Phis
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
@@ -395,9 +408,6 @@ pub enum Opcode {
 
     // Rv phis , high level PHIS, ie marshal 2 boxed value,
     RvPhi,
-
-    // Represent the function input arguments,
-    RvParam,
 
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
@@ -444,10 +454,7 @@ pub enum Opcode {
     // List creation operations, this operation creates a new list in boxed
     // version
     RvListCreate,
-    RvListAdd,
-
     RvObjectCreate,
-    RvObjectAdd,
 
     RvIteratorNew,
     RvIteratorHas,
@@ -468,6 +475,13 @@ pub enum Opcode {
     RvMemIndexStore,
     RvMemDotLoad,
     RvMemDotStore,
+
+    // Represent the function input arguments,
+    RvParam,
+
+    // Effect order operation, used to help order of memory access
+    RvEffectStart,
+    RvEffectAfter,
 
     // Builtins
     RvAssert1,
@@ -633,12 +647,6 @@ pub enum ParamLimits {
 
 pub struct MachineFlag;
 
-impl MachineFlag {
-    fn new_default() -> MachineFlag {
-        MachineFlag {}
-    }
-}
-
 pub struct Op {
     pub name: String,
     pub tier: OpTier,
@@ -702,7 +710,7 @@ pub struct Mpool {
     op_imm_i16: Oref,
     op_imm_i8: Oref,
     op_imm_f64: Oref,
-    op_imm_bool: Oref,
+    op_imm_boolean: Oref,
     op_imm_null: Oref,
     op_imm_string: Oref,
 
@@ -778,6 +786,9 @@ pub struct Mpool {
     op_trap_true: Oref,
     op_trap_false: Oref,
 
+    op_error_div_zero: Oref,
+    op_error_pow_negative_int: Oref,
+
     // (((((((((((((((((((((( PLACEHOLDER ))))))))))))))))))))))
     op_placeholder: Oref,
     op_loop_iv_placeholder: Oref,
@@ -815,10 +826,7 @@ pub struct Mpool {
     op_rv_load_function: Oref,
 
     op_rv_list_create: Oref,
-    op_rv_list_add: Oref,
-
     op_rv_object_create: Oref,
-    op_rv_object_add: Oref,
 
     op_rv_iterator_new: Oref,
     op_rv_iterator_has: Oref,
@@ -835,6 +843,9 @@ pub struct Mpool {
     op_rv_mem_index_store: Oref,
     op_rv_mem_dot_load: Oref,
     op_rv_mem_dot_store: Oref,
+
+    op_rv_effect_start: Oref,
+    op_rv_effect_after: Oref,
 
     op_rv_assert1: Oref,
     op_rv_assert2: Oref,
@@ -950,6 +961,82 @@ pub struct JFunc {
 
     // rpo order
     pub rpo: BBList,
+}
+
+impl MachineFlag {
+    fn new_default() -> MachineFlag {
+        MachineFlag {}
+    }
+}
+
+impl Imm {
+    pub fn is_imm(&self) -> bool {
+        return *self != Imm::Invalid;
+    }
+
+    pub fn is_imm_index(&self) -> bool {
+        match self {
+            Imm::Index(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    pub fn is_imm_int(&self) -> bool {
+        match self {
+            Imm::ImmU32(_)
+            | Imm::ImmU16(_)
+            | Imm::ImmU8(_)
+            | Imm::ImmI64(_)
+            | Imm::ImmI32(_)
+            | Imm::ImmI16(_)
+            | Imm::ImmI8(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    pub fn is_imm_real(&self) -> bool {
+        match self {
+            Imm::ImmF64(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    pub fn is_imm_num(&self) -> bool {
+        return self.is_imm_int() || self.is_imm_real();
+    }
+
+    pub fn is_imm_boolean(&self) -> bool {
+        match self {
+            Imm::ImmBoolean(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    pub fn is_imm_null(&self) -> bool {
+        match self {
+            Imm::ImmNull => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    pub fn is_imm_str(&self) -> bool {
+        match self {
+            Imm::ImmStr(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
 }
 
 impl MainType {
@@ -1255,6 +1342,9 @@ impl Reclaim for Node {
 impl BcCtx {
     pub fn new(bc: u32, fr: u32) -> BcCtx {
         BcCtx { bc: bc, frame: fr }
+    }
+    pub fn new_unknown() -> BcCtx {
+        BcCtx::new(std::u32::MAX, std::u32::MAX)
     }
 
     pub fn new_main(bc: u32) -> BcCtx {
@@ -1665,6 +1755,25 @@ impl Node {
         return self.value[0].clone();
     }
 
+    pub fn has_value(&self) -> bool {
+        return self.value.len() != 0;
+    }
+    pub fn has_effect(&self) -> bool {
+        return self.effect.len() != 0;
+    }
+    pub fn has_cfg(&self) -> bool {
+        return self.cfg.len() != 0;
+    }
+    pub fn value_len(&self) -> usize {
+        return self.value.len();
+    }
+    pub fn effect_len(&self) -> usize {
+        return self.effect.len();
+    }
+    pub fn cfg_len(&self) -> usize {
+        return self.cfg.len();
+    }
+
     // ------------------------------------------------------------------------
     // Convinient methods
     pub fn is_cfg(&self) -> bool {
@@ -1679,6 +1788,9 @@ impl Node {
     pub fn is_trap(&self) -> bool {
         return Op::is_trap(&self.op);
     }
+    pub fn is_error(&self) -> bool {
+        return Op::is_error(&self.op);
+    }
     pub fn is_bval(&self) -> bool {
         return Op::is_bval(&self.op);
     }
@@ -1692,6 +1804,7 @@ impl Node {
         return Op::is_low(&self.op);
     }
     pub fn is_imm(&self) -> bool {
+        debug_assert!(self.imm.is_imm());
         return Op::is_imm(&self.op);
     }
     pub fn is_placeholder(&self) -> bool {
@@ -1718,11 +1831,49 @@ impl Node {
     pub fn is_rv_object_create(&self) -> bool {
         return self.op.op == Opcode::RvObjectCreate;
     }
+    pub fn is_rv_memory(&self) -> bool {
+        if self.is_rv_object_create() || self.is_rv_list_create() {
+            return true;
+        }
+        // check whether it is a PHI node, if so, iterate through each nodes
+        // recursively to testify whether it is a rv memory
+        if self.is_phi() {
+            for x in self.value.iter() {
+                if x.borrow().is_rv_memory() {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     pub fn is_cfg_start(&self) -> bool {
         return self.op.op == Opcode::CfgStart;
     }
     pub fn is_cfg_end(&self) -> bool {
         return self.op.op == Opcode::CfgEnd;
+    }
+
+    // immediate number related
+    pub fn is_imm_int(&self) -> bool {
+        return self.imm.is_imm_int();
+    }
+    pub fn is_imm_real(&self) -> bool {
+        return self.imm.is_imm_real();
+    }
+    pub fn is_imm_num(&self) -> bool {
+        return self.imm.is_imm_num();
+    }
+    pub fn is_imm_boolean(&self) -> bool {
+        return self.imm.is_imm_boolean();
+    }
+    pub fn is_imm_null(&self) -> bool {
+        return self.imm.is_imm_null();
+    }
+    pub fn is_imm_str(&self) -> bool {
+        return self.imm.is_imm_str();
+    }
+    pub fn is_imm_index(&self) -> bool {
+        return self.imm.is_imm_index();
     }
 
     pub fn mark_dead(&mut self) {
@@ -1764,6 +1915,10 @@ impl Op {
         return x.tier == OpTier::Guard;
     }
 
+    fn is_error(x: &Oref) -> bool {
+        return x.tier == OpTier::Error;
+    }
+
     fn is_trap(x: &Oref) -> bool {
         return x.tier == OpTier::Trap;
     }
@@ -1799,6 +1954,7 @@ impl Op {
     fn is_value(x: &Oref) -> bool {
         return x.tier == OpTier::Bval
             || x.tier == OpTier::Guard
+            || x.tier == OpTier::Error
             || x.tier == OpTier::Trap
             || x.tier == OpTier::Phi
             || x.tier == OpTier::Rval
@@ -1933,20 +2089,8 @@ impl Op {
         );
     }
 
-    fn new_rv_load(n: &str, opcode: Opcode) -> Op {
-        return Op::new_untype(
-            n,
-            OpTier::Rval,
-            opcode,
-            false,
-            false,
-            ParamLimits::Limit(1),
-            MachineFlag::new_default(),
-        );
-    }
-
-    fn new_imm(n: &str, opcode: Opcode) -> Op {
-        return Op::new_untype(
+    fn new_imm(n: &str, opcode: Opcode, t: JType) -> Op {
+        return Op::new_type(
             n,
             OpTier::Imm,
             opcode,
@@ -1954,6 +2098,7 @@ impl Op {
             false,
             ParamLimits::Limit(0),
             MachineFlag::new_default(),
+            t,
         );
     }
 
@@ -1962,41 +2107,45 @@ impl Op {
     // the Mpool, the creation of Op needs to take place in Mpool and Op is most
     // just immutable placeholder
     fn imm_index() -> Oref {
-        Oref::new(Op::new_imm("imm_index", Opcode::ImmIndex))
+        Oref::new(Op::new_imm("imm_index", Opcode::ImmIndex, JType::new_u32()))
     }
     fn imm_u32() -> Oref {
-        Oref::new(Op::new_imm("imm_u32", Opcode::ImmU32))
+        Oref::new(Op::new_imm("imm_u32", Opcode::ImmU32, JType::new_u32()))
     }
     fn imm_u16() -> Oref {
-        Oref::new(Op::new_imm("imm_u16", Opcode::ImmU16))
+        Oref::new(Op::new_imm("imm_u16", Opcode::ImmU16, JType::new_u16()))
     }
     fn imm_u8() -> Oref {
-        Oref::new(Op::new_imm("imm_u8", Opcode::ImmU8))
+        Oref::new(Op::new_imm("imm_u8", Opcode::ImmU8, JType::new_u8()))
     }
 
     fn imm_i64() -> Oref {
-        Oref::new(Op::new_imm("imm_i64", Opcode::ImmI64))
+        Oref::new(Op::new_imm("imm_i64", Opcode::ImmI64, JType::new_i64()))
     }
     fn imm_i32() -> Oref {
-        Oref::new(Op::new_imm("imm_i32", Opcode::ImmI32))
+        Oref::new(Op::new_imm("imm_i32", Opcode::ImmI32, JType::new_i32()))
     }
     fn imm_i16() -> Oref {
-        Oref::new(Op::new_imm("imm_i16", Opcode::ImmI16))
+        Oref::new(Op::new_imm("imm_i16", Opcode::ImmI16, JType::new_i16()))
     }
     fn imm_i8() -> Oref {
-        Oref::new(Op::new_imm("imm_i8", Opcode::ImmI8))
+        Oref::new(Op::new_imm("imm_i8", Opcode::ImmI8, JType::new_i8()))
     }
     fn imm_f64() -> Oref {
-        Oref::new(Op::new_imm("imm_f64", Opcode::ImmF64))
+        Oref::new(Op::new_imm("imm_f64", Opcode::ImmF64, JType::new_f64()))
     }
     fn imm_bool() -> Oref {
-        Oref::new(Op::new_imm("imm_bool", Opcode::ImmBool))
+        Oref::new(Op::new_imm(
+            "imm_bool",
+            Opcode::ImmBoolean,
+            JType::new_boolean(),
+        ))
     }
     fn imm_null() -> Oref {
-        Oref::new(Op::new_imm("imm_null", Opcode::ImmNull))
+        Oref::new(Op::new_imm("imm_null", Opcode::ImmNull, JType::new_null()))
     }
     fn imm_string() -> Oref {
-        Oref::new(Op::new_imm("imm_string", Opcode::ImmString))
+        Oref::new(Op::new_imm("imm_string", Opcode::ImmStr, JType::new_str()))
     }
 
     fn box_i64() -> Oref {
@@ -2700,6 +2849,31 @@ impl Op {
     }
 
     // =============================================================
+    // (((Error)))
+    // =============================================================
+    fn error_div_zero() -> Oref {
+        Oref::new(Op::new_unary_untype(
+            "error_div_zero",
+            OpTier::Error,
+            Opcode::ErrorDivZero,
+            false,
+            false,
+            MachineFlag::new_default(),
+        ))
+    }
+
+    fn error_pow_negative_int() -> Oref {
+        Oref::new(Op::new_unary_untype(
+            "error_pow_negative_int",
+            OpTier::Error,
+            Opcode::ErrorPowNegativeInt,
+            false,
+            false,
+            MachineFlag::new_default(),
+        ))
+    }
+
+    // =============================================================
     // (((Placeholder)))
     // =============================================================
     fn placeholder() -> Oref {
@@ -2803,72 +2977,92 @@ impl Op {
         Oref::new(Op::new_rv_unary("rv_neg", Opcode::RvNeg))
     }
 
+    fn new_rv_load(n: &str, opcode: Opcode, tp: JType) -> Op {
+        return Op::new_type(
+            n,
+            OpTier::Rval,
+            opcode,
+            false,
+            false,
+            ParamLimits::Limit(1),
+            MachineFlag::new_default(),
+            tp,
+        );
+    }
+
     fn rv_load_int() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_int", Opcode::RvLoadInt))
+        Oref::new(Op::new_rv_load(
+            "rv_load_int",
+            Opcode::RvLoadInt,
+            JType::new_int(),
+        ))
     }
     fn rv_load_real() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_real", Opcode::RvLoadReal))
+        Oref::new(Op::new_rv_load(
+            "rv_load_real",
+            Opcode::RvLoadReal,
+            JType::new_real(),
+        ))
     }
     fn rv_load_string() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_string", Opcode::RvLoadString))
+        Oref::new(Op::new_rv_load(
+            "rv_load_string",
+            Opcode::RvLoadString,
+            JType::new_str(),
+        ))
     }
     fn rv_load_function() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_function", Opcode::RvLoadFunction))
+        Oref::new(Op::new_rv_load(
+            "rv_load_function",
+            Opcode::RvLoadFunction,
+            JType::new_function(),
+        ))
     }
     fn rv_load_null() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_null", Opcode::RvLoadNull))
+        Oref::new(Op::new_rv_load(
+            "rv_load_null",
+            Opcode::RvLoadNull,
+            JType::new_null(),
+        ))
     }
     fn rv_load_true() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_true", Opcode::RvLoadTrue))
+        Oref::new(Op::new_rv_load(
+            "rv_load_true",
+            Opcode::RvLoadTrue,
+            JType::new_boolean(),
+        ))
     }
     fn rv_load_false() -> Oref {
-        Oref::new(Op::new_rv_load("rv_load_false", Opcode::RvLoadFalse))
+        Oref::new(Op::new_rv_load(
+            "rv_load_false",
+            Opcode::RvLoadFalse,
+            JType::new_boolean(),
+        ))
     }
 
     fn rv_list_create() -> Oref {
-        Oref::new(Op::new_untype(
+        Oref::new(Op::new_type(
             "rv_list_create",
             OpTier::Rval,
             Opcode::RvListCreate,
             false,
             false,
-            ParamLimits::Limit(1),
-            MachineFlag::new_default(),
-        ))
-    }
-
-    fn rv_list_add() -> Oref {
-        Oref::new(Op::new_untype(
-            "rv_list_add",
-            OpTier::Rval,
-            Opcode::RvListAdd,
-            false,
-            false,
             ParamLimits::Any,
             MachineFlag::new_default(),
+            JType::new_list(),
         ))
     }
 
     fn rv_object_create() -> Oref {
-        Oref::new(Op::new_untype(
+        Oref::new(Op::new_type(
             "rv_object_create",
             OpTier::Rval,
             Opcode::RvObjectCreate,
             false,
             false,
-            ParamLimits::Limit(1),
-            MachineFlag::new_default(),
-        ))
-    }
-    fn rv_object_add() -> Oref {
-        Oref::new(Op::new_untype(
-            "rv_object_add",
-            OpTier::Rval,
-            Opcode::RvObjectAdd,
-            false,
-            false,
             ParamLimits::Any,
             MachineFlag::new_default(),
+            JType::new_object(),
         ))
     }
 
@@ -3009,6 +3203,30 @@ impl Op {
             true,
             false,
             ParamLimits::Limit(3),
+            MachineFlag::new_default(),
+        ))
+    }
+
+    fn rv_effect_after() -> Oref {
+        Oref::new(Op::new_untype(
+            "rv_effect_after",
+            OpTier::Rval,
+            Opcode::RvEffectAfter,
+            false,
+            false,
+            ParamLimits::Limit(2),
+            MachineFlag::new_default(),
+        ))
+    }
+
+    fn rv_effect_start() -> Oref {
+        Oref::new(Op::new_untype(
+            "rv_effect_start",
+            OpTier::Rval,
+            Opcode::RvEffectStart,
+            false,
+            false,
+            ParamLimits::Limit(0),
             MachineFlag::new_default(),
         ))
     }
@@ -3856,7 +4074,7 @@ impl Mpool {
             op_imm_i16: Op::imm_i16(),
             op_imm_i8: Op::imm_i8(),
             op_imm_f64: Op::imm_f64(),
-            op_imm_bool: Op::imm_bool(),
+            op_imm_boolean: Op::imm_bool(),
             op_imm_null: Op::imm_null(),
             op_imm_string: Op::imm_string(),
 
@@ -3932,6 +4150,9 @@ impl Mpool {
             op_trap_true: Op::trap_true(),
             op_trap_false: Op::trap_false(),
 
+            op_error_div_zero: Op::error_div_zero(),
+            op_error_pow_negative_int: Op::error_pow_negative_int(),
+
             // Pesudo nodes
             op_placeholder: Op::placeholder(),
             op_loop_iv_placeholder: Op::loop_iv_placeholder(),
@@ -3969,9 +4190,7 @@ impl Mpool {
             op_rv_load_function: Op::rv_load_function(),
 
             op_rv_list_create: Op::rv_list_create(),
-            op_rv_list_add: Op::rv_list_add(),
             op_rv_object_create: Op::rv_object_create(),
-            op_rv_object_add: Op::rv_object_add(),
 
             op_rv_iterator_new: Op::rv_iterator_new(),
             op_rv_iterator_has: Op::rv_iterator_has(),
@@ -3988,6 +4207,9 @@ impl Mpool {
             op_rv_mem_index_store: Op::rv_mem_index_store(),
             op_rv_mem_dot_load: Op::rv_mem_dot_load(),
             op_rv_mem_dot_store: Op::rv_mem_dot_store(),
+
+            op_rv_effect_start: Op::rv_effect_start(),
+            op_rv_effect_after: Op::rv_effect_after(),
 
             op_rv_assert1: Op::rv_assert1(),
             op_rv_assert2: Op::rv_assert2(),
@@ -4773,6 +4995,29 @@ impl Mpool {
     }
 
     // ========================================================================
+    // Error
+    // ========================================================================
+    pub fn new_error_div_zero(&mut self, bc: BcCtx) -> Nref {
+        let x = Node::new(
+            Oref::clone(&self.op_error_div_zero),
+            self.node_next_id(),
+            bc,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_error_pow_negative_int(&mut self, bc: BcCtx) -> Nref {
+        let x = Node::new(
+            Oref::clone(&self.op_error_pow_negative_int),
+            self.node_next_id(),
+            bc,
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    // ========================================================================
     // Immediate
     // ========================================================================
     pub fn new_imm_index(&mut self, index: u32, bcpos: BcCtx) -> Nref {
@@ -4868,10 +5113,10 @@ impl Mpool {
 
     pub fn new_imm_true(&mut self, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
-            Oref::clone(&self.op_imm_bool),
+            Oref::clone(&self.op_imm_boolean),
             self.node_next_id(),
             bcpos,
-            Imm::ImmBool(true),
+            Imm::ImmBoolean(true),
         );
         self.watch_node(&x);
         return x;
@@ -4879,10 +5124,21 @@ impl Mpool {
 
     pub fn new_imm_false(&mut self, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
-            Oref::clone(&self.op_imm_bool),
+            Oref::clone(&self.op_imm_boolean),
             self.node_next_id(),
             bcpos,
-            Imm::ImmBool(false),
+            Imm::ImmBoolean(false),
+        );
+        self.watch_node(&x);
+        return x;
+    }
+
+    pub fn new_imm_boolean(&mut self, bval: bool, bcpos: BcCtx) -> Nref {
+        let x = Node::new_imm(
+            Oref::clone(&self.op_imm_boolean),
+            self.node_next_id(),
+            bcpos,
+            Imm::ImmBoolean(bval),
         );
         self.watch_node(&x);
         return x;
@@ -4899,12 +5155,12 @@ impl Mpool {
         return x;
     }
 
-    pub fn new_imm_string(&mut self, s: String, bcpos: BcCtx) -> Nref {
+    pub fn new_imm_str(&mut self, s: String, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_string),
             self.node_next_id(),
             bcpos,
-            Imm::ImmString(s),
+            Imm::ImmStr(s),
         );
         self.watch_node(&x);
         return x;
@@ -5134,31 +5390,11 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_list_add(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
-            Oref::clone(&self.op_rv_list_add),
-            self.node_next_id(),
-            bcpos,
-        );
-        self.watch_node(&n);
-        return n;
-    }
-
     // -------------------------------------------------------------------------
     // object creation
     pub fn new_rv_object_create(&mut self, bcpos: BcCtx) -> Nref {
         let n = Node::new(
             Oref::clone(&self.op_rv_object_create),
-            self.node_next_id(),
-            bcpos,
-        );
-        self.watch_node(&n);
-        return n;
-    }
-
-    pub fn new_rv_object_add(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
-            Oref::clone(&self.op_rv_object_add),
             self.node_next_id(),
             bcpos,
         );
@@ -5306,6 +5542,28 @@ impl Mpool {
         Node::add_value(&mut n, recv);
         Node::add_value(&mut n, idx);
         Node::add_value(&mut n, val);
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_rv_effect_start(&mut self, bc: BcCtx) -> Nref {
+        let mut n = Node::new(
+            Oref::clone(&self.op_rv_effect_start),
+            self.node_next_id(),
+            BcCtx::new_unknown(),
+        );
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_rv_effect_after(&mut self, val: Nref, effect: Nref) -> Nref {
+        let mut n = Node::new(
+            Oref::clone(&self.op_rv_effect_after),
+            self.node_next_id(),
+            BcCtx::new_unknown(),
+        );
+        Node::add_value(&mut n, val);
+        Node::add_value(&mut n, effect);
         self.watch_node(&n);
         return n;
     }
@@ -5851,7 +6109,7 @@ impl Mpool {
     //                          Control Flow Graph
     // -------------------------------------------------------------------------
     pub fn new_cfg_start(&mut self, bcid: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_start),
             self.node_next_id(),
             bcid,
@@ -5861,14 +6119,14 @@ impl Mpool {
     }
 
     pub fn new_cfg_end(&mut self, bcid: BcCtx) -> Nref {
-        let n =
+        let mut n =
             Node::new(Oref::clone(&self.op_cfg_end), self.node_next_id(), bcid);
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_merge_return(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_merge_return),
             self.node_next_id(),
             bcpos,
@@ -5878,7 +6136,7 @@ impl Mpool {
     }
 
     pub fn new_cfg_merge_halt(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_merge_halt),
             self.node_next_id(),
             bcpos,
@@ -5888,51 +6146,56 @@ impl Mpool {
     }
 
     pub fn new_cfg_halt(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_halt),
             self.node_next_id(),
-            bcpos,
+            bcpos.clone(),
         );
+        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_return(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_return),
             self.node_next_id(),
-            bcpos,
+            bcpos.clone(),
         );
+        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_if_cmp(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_if_cmp),
             self.node_next_id(),
-            bcpos,
+            bcpos.clone(),
         );
+        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_jump(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_jump),
             self.node_next_id(),
-            bcpos,
+            bcpos.clone(),
         );
+        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_loop_back(&mut self, bcpos: BcCtx) -> Nref {
-        let n = Node::new(
+        let mut n = Node::new(
             Oref::clone(&self.op_cfg_loop_back),
             self.node_next_id(),
-            bcpos,
+            bcpos.clone(),
         );
+        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }

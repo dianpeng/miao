@@ -1477,14 +1477,6 @@ macro_rules! bin_comparison {
                             lv $op Util::must_real(&r),
                         ));
                     }
-                    Handle::Boolean(lv) => {
-                        fd.binary( FType::Boolean, FType::Boolean);
-                        return Result::Ok(Handle::Boolean(lv $op Util::must_boolean(&r)));
-                    }
-                    Handle::Null => {
-                        fd.binary(FType::Null, FType::Null);
-                        return Result::Ok(Handle::Boolean(true));
-                    }
                     Handle::Str(lv) => {
                         let lhs_borrow = lv.borrow();
                         let lhs = lhs_borrow.string.as_str();
@@ -3413,14 +3405,6 @@ let r0 = [];
         assert_eq!(runstr_bool("return false== false;"), true);
         assert_eq!(runstr_bool("return false != false;"), false);
         assert_eq!(runstr_bool("return true != false;"), true);
-
-        // also stupid
-        assert_eq!(runstr_bool("return true > true;"), false);
-        assert_eq!(runstr_bool("return true>=true;"), true);
-        assert_eq!(runstr_bool("return false > false;"), false);
-        assert_eq!(runstr_bool("return false >= false;"), true);
-        assert_eq!(runstr_bool("return false < false;"), false);
-        assert_eq!(runstr_bool("return false <= false;"), true);
     }
 
     #[test]

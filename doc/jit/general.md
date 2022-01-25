@@ -122,22 +122,15 @@ folding etc ...
 Dead code elimination, this pass is basically used for deleting control flow
 nodes that are not in used anymore
 
-### 9. LCIM (loop invariants code motion)
+### 9. GCM (global code motion)
 
-This pass basically performs a simple LCIM. What it actually does is that it
-tries to peel one iteration from the loop and put it ahead of the loop body
-as dominator and then runs GVN on tops of the newly generated graph to perform
-dedup. Any LCIM value should be deduped by GVN so later scheduling pass will
-just have to find out a dominator that these def-use all shared but not in loop
-to perform LCIM.
-
-This trick is been used in LuaJIT.
+This pass basically does LICM optimization via global code motion, which also
+fix the floating instruction into the BB, pretty much like scheduling.
 
 ### 10. Scheduling
 
-Scheduling of the instruction into BB. This pass is very important for us since
-it does put the floating node fixed into BB and also it fixed BB skeleton as
-well.
+This follows the GCM, which already fixes all the floating instruction into the
+BB.
 
 After this pass, all the nodes will not be sea-of-nodes but traditionally CFG.
 

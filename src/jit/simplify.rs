@@ -167,7 +167,7 @@ impl RvSimplify {
         debug_assert!(x.borrow().value.len() == 1);
         let imm = x.borrow().value[0].borrow().imm.clone();
         if let Imm::Index(idx) = imm {
-            let new_node = self.mptr().borrow_mut().new_imm_string(
+            let new_node = self.mptr().borrow_mut().new_imm_str(
                 self.f.borrow().func.borrow().proto.code.load_str(idx),
                 x.borrow().bc.clone(),
             );

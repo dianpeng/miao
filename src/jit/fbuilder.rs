@@ -388,6 +388,17 @@ impl FBuilder {
         return Envptr::clone(&self.env_list[idx as usize].clone());
     }
 
+    fn cur_effect(&self) -> Option<Nref> {
+        let cur_cfg = self.cur_env().borrow().cfg.clone();
+        if cur_cfg.borrow().has_effect() {
+            return Option::Some(Nref::clone(
+                cur_cfg.borrow().effect.last().unwrap(),
+            ));
+        } else {
+            return Option::None;
+        }
+    }
+
     fn has_cur_env(&self) -> bool {
         return self.cur_env.len() != 0;
     }
@@ -466,8 +477,7 @@ impl FBuilder {
         self.cur_env().borrow_mut().stack.push(x);
     }
 
-    // for documentation purpose, notes these value pops out the value
-    // automatically
+    // =====================================================================
     fn una(&mut self) -> Nref {
         let tos = self.stack_top0();
         self.stack_pop();
@@ -481,6 +491,83 @@ impl FBuilder {
     }
     fn tos(&mut self) -> Nref {
         return self.una();
+    }
+
+    // =====================================================================
+    //
+    // bytecode construction needs to use following method to access the stack
+    // value since it takes care of the side effect order, otherwise memory
+    // object will not be correctly ordered inside of the graph.
+    //
+    // =====================================================================
+    fn add_side_effect_dependency(&mut self, x: &mut Nref) -> Option<Nref> {
+        let should_have_side_effect = x.borrow().is_rv_memory();
+        if should_have_side_effect {
+            match self.cur_effect() {
+                Option::Some(eff) => {
+                    let after = self
+                        .mptr()
+                        .borrow_mut()
+                        .new_rv_effect_after(x.clone(), eff);
+                    return Option::Some(after);
+                }
+                _ => (),
+            };
+        }
+        return Option::None;
+    }
+
+    fn arg_una(&mut self) -> Nref {
+        let mut x = self.una();
+        match self.add_side_effect_dependency(&mut x) {
+            Option::Some(xx) => return xx,
+            _ => (),
+        };
+        return x;
+    }
+
+    fn arg_lhs(&mut self) -> Nref {
+        let mut x = self.lhs();
+        match self.add_side_effect_dependency(&mut x) {
+            Option::Some(xx) => return xx,
+            _ => (),
+        };
+        return x;
+    }
+
+    fn arg_rhs(&mut self) -> Nref {
+        let mut x = self.rhs();
+        match self.add_side_effect_dependency(&mut x) {
+            Option::Some(xx) => return xx,
+            _ => (),
+        };
+        return x;
+    }
+
+    fn arg_tos(&mut self) -> Nref {
+        return self.arg_una();
+    }
+
+    fn arg_index(&mut self, off: u32) -> Nref {
+        let mut x = self.stack_index(off);
+        match self.add_side_effect_dependency(&mut x) {
+            Option::Some(xx) => return xx,
+            _ => (),
+        };
+        return x;
+    }
+
+    fn arg_top(&mut self, off: u32) -> Nref {
+        let mut x = self.stack_top(off);
+        match self.add_side_effect_dependency(&mut x) {
+            Option::Some(xx) => return xx,
+            _ => (),
+        };
+        return x;
+    }
+
+    fn arg_top0(&mut self) -> Nref {
+        return self.arg_top(0);
     }
 
     // Special function that is been used to place value into TOS
@@ -526,8 +613,8 @@ impl FBuilder {
     // ====================================================================
     // Arithmetic
     fn b_add(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -536,8 +623,8 @@ impl FBuilder {
         return true;
     }
     fn b_sub(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -546,8 +633,8 @@ impl FBuilder {
         return true;
     }
     fn b_mul(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -556,8 +643,8 @@ impl FBuilder {
         return true;
     }
     fn b_div(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -566,8 +653,8 @@ impl FBuilder {
         return true;
     }
     fn b_mod(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -576,8 +663,8 @@ impl FBuilder {
         return true;
     }
     fn b_pow(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -589,8 +676,8 @@ impl FBuilder {
     // -----------------------------------------------------------------------
     // Comparison
     fn b_eq(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -599,8 +686,8 @@ impl FBuilder {
         return true;
     }
     fn b_ne(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -609,8 +696,8 @@ impl FBuilder {
         return true;
     }
     fn b_gt(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -619,8 +706,8 @@ impl FBuilder {
         return true;
     }
     fn b_ge(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -629,8 +716,8 @@ impl FBuilder {
         return true;
     }
     fn b_lt(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -639,8 +726,8 @@ impl FBuilder {
         return true;
     }
     fn b_le(&mut self, bcpos: u32) -> bool {
-        let lhs = self.lhs();
-        let rhs = self.rhs();
+        let lhs = self.arg_lhs();
+        let rhs = self.arg_rhs();
         let val =
             self.mptr()
                 .borrow_mut()
@@ -651,21 +738,21 @@ impl FBuilder {
 
     // unary
     fn b_not(&mut self, bcpos: u32) -> bool {
-        let v = self.una();
+        let v = self.arg_una();
         let val = self.mptr().borrow_mut().new_rv_not(v, self.bc_ctx(bcpos));
         self.output_tos(val);
         return true;
     }
 
     fn b_neg(&mut self, bcpos: u32) -> bool {
-        let v = self.una();
+        let v = self.arg_una();
         let val = self.mptr().borrow_mut().new_rv_neg(v, self.bc_ctx(bcpos));
         self.output_tos(val);
         return true;
     }
 
     fn b_boolean(&mut self, bcpos: u32) -> bool {
-        let v = self.una();
+        let v = self.arg_una();
         let val = self
             .mptr()
             .borrow_mut()
@@ -678,11 +765,10 @@ impl FBuilder {
     // concate nation opcode ie RvConStr(lhs, rhs). Notes, we don't have HIR that
     // can concatenate multiple strings together
     fn b_con_str(&mut self, tt: u32, bcpos: u32) -> bool {
-        // (0) loading the strings
         let stack_len = self.stack_len() as u32;
         assert!(stack_len >= tt);
         let mut current_index = stack_len - tt;
-        let val = self.stack_index(current_index);
+        let val = self.arg_index(current_index);
         let mut current = self
             .mptr()
             .borrow_mut()
@@ -694,7 +780,7 @@ impl FBuilder {
                 break;
             }
 
-            let opr = self.stack_index(current_index);
+            let opr = self.arg_index(current_index);
             let rhs = self
                 .mptr()
                 .borrow_mut()
@@ -802,17 +888,14 @@ impl FBuilder {
             .borrow_mut()
             .new_rv_list_create(self.bc_ctx(bcpos));
 
-        let len = self
-            .mptr()
-            .borrow_mut()
-            .new_imm_u32(len, self.bc_ctx(bcpos));
-        Node::add_value(&mut val, len);
-
         self.output_tos(val);
         return true;
     }
 
     fn b_list_add(&mut self, tt: u32, _: u32) -> bool {
+        // notes(dpeng): for list_add instruction we don't want it to be
+        //   followed by the effect modification since the list_add will
+        //   immediately follow a object_create bytecode instruction
         let mut list = self.stack_top(tt);
         debug_assert!(list.borrow().is_rv_list_create());
 
@@ -822,7 +905,7 @@ impl FBuilder {
             if start_index == stack_len {
                 break;
             }
-            let v = self.stack_index(start_index);
+            let v = self.arg_index(start_index);
             Node::add_value(&mut list, v);
 
             start_index += 1;
@@ -838,19 +921,16 @@ impl FBuilder {
             .borrow_mut()
             .new_rv_object_create(self.bc_ctx(bcpos));
 
-        let len = self
-            .mptr()
-            .borrow_mut()
-            .new_imm_u32(len, self.bc_ctx(bcpos));
-
-        Node::add_value(&mut val, len);
-
         self.output_tos(val);
         return true;
     }
 
     fn b_object_add(&mut self, tt: u32, _: u32) -> bool {
-        let mut obj = self.stack_top(tt);
+        // notes(dpeng): for object_add instruction we don't want it to be
+        //   followed by the effect modification since the object_add will
+        //   immediately follow a object_create bytecode instruction
+        let mut obj = self.stack_top(tt * 2);
+
         debug_assert!(obj.borrow().is_rv_object_create());
 
         let stack_len = self.stack_len() as u32;
@@ -859,8 +939,8 @@ impl FBuilder {
             if start_index == stack_len {
                 break;
             }
-            let key = self.stack_index(start_index);
-            let val = self.stack_index(start_index + 1);
+            let key = self.arg_index(start_index);
+            let val = self.arg_index(start_index + 1);
 
             Node::add_value(&mut obj, key);
             Node::add_value(&mut obj, val);
@@ -874,7 +954,7 @@ impl FBuilder {
 
     // Iterators
     fn b_iterator_new(&mut self, bcpos: u32) -> bool {
-        let opr = self.una();
+        let opr = self.arg_una();
         let itr = self
             .mptr()
             .borrow_mut()
@@ -883,7 +963,7 @@ impl FBuilder {
         return true;
     }
     fn b_iterator_has(&mut self, bcpos: u32) -> bool {
-        let opr = self.stack_top0();
+        let opr = self.arg_top0();
         let itr = self
             .mptr()
             .borrow_mut()
@@ -892,7 +972,7 @@ impl FBuilder {
         return true;
     }
     fn b_iterator_next(&mut self, bcpos: u32) -> bool {
-        let opr = self.stack_top0();
+        let opr = self.arg_top0();
         let itr = self
             .mptr()
             .borrow_mut()
@@ -901,7 +981,7 @@ impl FBuilder {
         return true;
     }
     fn b_iterator_value(&mut self, bcpos: u32) -> bool {
-        let opr = self.stack_top0();
+        let opr = self.arg_top0();
         let itr = self
             .mptr()
             .borrow_mut()
@@ -916,10 +996,17 @@ impl FBuilder {
             .mptr()
             .borrow_mut()
             .new_imm_index(index, self.bc_ctx(bcpos));
+
+        let name = self
+            .mptr()
+            .borrow_mut()
+            .new_rv_load_string(index, self.bc_ctx(bcpos));
+
         let ldg = self
             .mptr()
             .borrow_mut()
-            .new_rv_load_global(index, self.bc_ctx(bcpos));
+            .new_rv_load_global(name, self.bc_ctx(bcpos));
+
         self.output_tos(ldg);
         return true;
     }
@@ -928,9 +1015,16 @@ impl FBuilder {
             .mptr()
             .borrow_mut()
             .new_imm_index(index, self.bc_ctx(bcpos));
-        let value = self.una();
+
+        let name = self
+            .mptr()
+            .borrow_mut()
+            .new_rv_load_string(index, self.bc_ctx(bcpos));
+
+        let value = self.arg_una();
+
         let stg = self.mptr().borrow_mut().new_rv_set_global(
-            index,
+            name,
             value,
             self.bc_ctx(bcpos),
         );
@@ -951,19 +1045,19 @@ impl FBuilder {
 
     fn b_stk_dup(&mut self) -> bool {
         let v = self.stack_top0();
-        self.output_tos(v);
+        self.stack_push(v);
         return true;
     }
     fn b_stk_dup2(&mut self) -> bool {
         let v0 = self.stack_top1();
         let v1 = self.stack_top0();
-        self.output_tos(v0);
-        self.output_tos(v1);
+        self.stack_push(v0);
+        self.stack_push(v1);
         return true;
     }
     fn b_stk_load(&mut self, idx: u32) -> bool {
         let v = self.stack_index(idx);
-        self.output_tos(v);
+        self.stack_push(v);
         return true;
     }
     fn b_stk_store(&mut self, idx: u32) -> bool {
@@ -979,7 +1073,7 @@ impl FBuilder {
                 .mptr()
                 .borrow_mut()
                 .new_rv_load_null(self.bc_ctx(bcpos));
-            self.output_tos(v);
+            self.stack_push(v);
             i += 1;
         }
         return true;
@@ -987,7 +1081,7 @@ impl FBuilder {
 
     // memory
     fn b_dot_load(&mut self, idx: Index, bcpos: u32) -> bool {
-        let recv = self.una();
+        let recv = self.arg_una();
         let idx = self
             .mptr()
             .borrow_mut()
@@ -1002,8 +1096,8 @@ impl FBuilder {
     }
 
     fn b_dot_store(&mut self, idx: Index, bcpos: u32) -> bool {
-        let value = self.tos();
-        let recv = self.tos();
+        let value = self.arg_tos();
+        let recv = self.arg_tos();
 
         let idx = self
             .mptr()
@@ -1015,27 +1109,29 @@ impl FBuilder {
             value,
             self.bc_ctx(bcpos),
         );
-        self.output_tos(v);
+        self.check_effect_node(&v);
         return true;
     }
 
     fn b_index_store(&mut self, bcpos: u32) -> bool {
-        let value = self.tos();
-        let index = self.tos();
-        let recv = self.tos();
+        let value = self.arg_tos();
+        let index = self.arg_tos();
+        let recv = self.arg_tos();
+
         let v = self.mptr().borrow_mut().new_index_store(
             recv,
             index,
             value,
             self.bc_ctx(bcpos),
         );
-        self.output_tos(v);
+        self.check_effect_node(&v);
         return true;
     }
 
     fn b_index_load(&mut self, bcpos: u32) -> bool {
-        let index = self.tos();
-        let recv = self.tos();
+        let index = self.arg_tos();
+        let recv = self.arg_tos();
+
         let v = self.mptr().borrow_mut().new_index_load(
             recv,
             index,
@@ -1049,7 +1145,7 @@ impl FBuilder {
     // Builtin
     // --------------------------------------------------------------
     fn b_assert1(&mut self, bcpos: u32) -> bool {
-        let cond = self.tos();
+        let cond = self.arg_tos();
         let v = self
             .mptr()
             .borrow_mut()
@@ -1059,8 +1155,8 @@ impl FBuilder {
     }
 
     fn b_assert2(&mut self, bcpos: u32) -> bool {
-        let msg = self.tos();
-        let cond = self.tos();
+        let msg = self.arg_tos();
+        let cond = self.arg_tos();
         let v = self.mptr().borrow_mut().new_rv_assert2(
             msg,
             cond,
@@ -1090,7 +1186,7 @@ impl FBuilder {
     }
 
     fn b_typeof(&mut self, bcpos: u32) -> bool {
-        let tos = self.una();
+        let tos = self.arg_una();
         let nd = self
             .mptr()
             .borrow_mut()
@@ -1100,7 +1196,7 @@ impl FBuilder {
     }
 
     fn b_sizeof(&mut self, bcpos: u32) -> bool {
-        let tos = self.una();
+        let tos = self.arg_una();
         let nd = self
             .mptr()
             .borrow_mut()
@@ -1122,12 +1218,13 @@ impl FBuilder {
         self.output_tos(nd);
         return true;
     }
+
     fn b_store_upvalue(&mut self, index: Index, bcpos: u32) -> bool {
         let idx = self
             .mptr()
             .borrow_mut()
             .new_imm_index(index, self.bc_ctx(bcpos));
-        let value = self.tos();
+        let value = self.arg_tos();
         let nd = self.mptr().borrow_mut().new_rv_set_upvalue(
             idx,
             value,
@@ -1245,7 +1342,7 @@ impl FBuilder {
         match bytecode {
             Bytecode::JumpFalse(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
-                Node::add_value(&mut cfg, self.una());
+                Node::add_value(&mut cfg, self.arg_una());
             }
 
             // The following And/Or bytecode's stack consistency is not
@@ -1253,22 +1350,22 @@ impl FBuilder {
             // generation. The fix is basically modify the stack value
             Bytecode::And(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
-                Node::add_value(&mut cfg, self.una());
+                Node::add_value(&mut cfg, self.arg_una());
             }
             Bytecode::Or(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
-                Node::add_value(&mut cfg, self.una());
+                Node::add_value(&mut cfg, self.arg_una());
             }
 
             Bytecode::Ternary(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
-                Node::add_value(&mut cfg, self.una());
+                Node::add_value(&mut cfg, self.arg_una());
             }
 
             // halt and return instructions
             Bytecode::Halt | Bytecode::Return(_) => {
                 let mut cfg = Nref::clone(&self.cur_env().borrow().cfg);
-                Node::add_value(&mut cfg, self.una());
+                Node::add_value(&mut cfg, self.arg_una());
             }
 
             // do nothing for unconditional jump
@@ -1682,6 +1779,7 @@ mod fbuilder_tests {
                 println!("---------------------------------------------------");
                 println!("                Bytecode");
                 println!("---------------------------------------------------");
+
                 println!("{}", a);
 
                 println!("---------------------------------------------------");
@@ -1724,24 +1822,19 @@ mod fbuilder_tests {
     fn basic() {
         do_print_code(
             r#"
- let lhs = 10;
- let rhs = 20;
- let cnt = 10;
- let i = 0;
- let out = -10;
- for {
-   if i == cnt {
-     break;
-   }
+ let x = {'a': 1};
+ let u = 0;
 
-   let v = lhs - rhs;
-   if v != 0 {
-     out = v;
-     break;
-   }
-   i += 1;
+ for {
+   x['c'] = 100;
+   u = x.c;
+   if u > 10 { 
+       break;
+    }
+    x = 20;
  }
- return out;
+ return u;
+
 "#,
         );
 

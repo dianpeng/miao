@@ -151,7 +151,32 @@ impl Typer {
     //   whatever information it gathers from the runtime and rules been applied
     //   accordingly.
 
-    fn unary_typer(&mut self, _: Nref) {}
+    fn unary_typer(&mut self, n: Nref) -> Option<()> {
+        debug_assert!(n.borrow().is_value_unary());
+
+        let una = n.borrow().una();
+        let una_feedback = self.unary_at(&n)?;
+
+        let tp = {
+            let mut t = una.borrow().type_hint.clone();
+            if !Typer::type_propagate(&una_feedback, &mut t) {
+                return Option::None;
+            }
+            una.borrow_mut().type_hint = t.clone();
+            t
+        };
+
+        let out_type = match n.borrow().op.op {
+            Opcode::RvNeg => tp.clone(),
+            Opcode::RvNot => MainType::Boolean,
+            Opcode::RvToString => MainType::Str,
+            Opcode::RvToBoolean => MainType::Boolean,
+            _ => MainType::Unknown,
+        };
+
+        n.borrow_mut().type_hint = out_type;
+        return Option::Some(());
+    }
 
     fn arithmetic_typer(&mut self, n: Nref) -> Option<()> {
         debug_assert!(n.borrow().is_value_binary());

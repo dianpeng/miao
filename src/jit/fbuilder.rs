@@ -29,6 +29,9 @@ struct Env {
 
     // some flags for verification
     visited: bool,
+
+    // whether the current Env is a loop body or not, duplicate flag from bbinfo
+    loop_body: bool,
 }
 
 type Envptr = Rc<RefCell<Env>>;
@@ -69,13 +72,14 @@ pub struct FBuilder {
 }
 
 impl Env {
-    fn new_ptr(bbinfo_id: u32, cfg: Nref) -> Envptr {
+    fn new_ptr(bbinfo_id: u32, cfg: Nref, is_loop: bool) -> Envptr {
         Envptr::new(RefCell::new(Env {
             bbinfo_id: bbinfo_id,
             stack: ValStack::new(),
             cfg: cfg,
             loop_iv: Vec::new(),
             visited: false,
+            loop_body: is_loop,
         }))
     }
 }
@@ -501,7 +505,7 @@ impl FBuilder {
     //
     // =====================================================================
     fn add_side_effect_dependency(&mut self, x: &mut Nref) -> Option<Nref> {
-        let should_have_side_effect = x.borrow().is_rv_memory();
+        let should_have_side_effect = x.borrow().test_rv_memory();
         if should_have_side_effect {
             match self.cur_effect() {
                 Option::Some(eff) => {
@@ -888,6 +892,13 @@ impl FBuilder {
             .borrow_mut()
             .new_rv_list_create(self.bc_ctx(bcpos));
 
+        // record memory usage
+        self.graph
+            .borrow_mut()
+            .extra_info
+            .mem_node
+            .push(Nref::clone(&val));
+
         self.output_tos(val);
         return true;
     }
@@ -920,6 +931,13 @@ impl FBuilder {
             .mptr()
             .borrow_mut()
             .new_rv_object_create(self.bc_ctx(bcpos));
+
+        // record memory usage
+        self.graph
+            .borrow_mut()
+            .extra_info
+            .mem_node
+            .push(Nref::clone(&val));
 
         self.output_tos(val);
         return true;
@@ -991,16 +1009,27 @@ impl FBuilder {
     }
 
     // Globals
-    fn b_load_global(&mut self, index: Index, bcpos: u32) -> bool {
+    fn b_load_global(&mut self, idx: Index, bcpos: u32) -> bool {
         let index = self
             .mptr()
             .borrow_mut()
-            .new_imm_index(index, self.bc_ctx(bcpos));
+            .new_imm_index(idx, self.bc_ctx(bcpos));
 
         let name = self
             .mptr()
             .borrow_mut()
             .new_rv_load_string(index, self.bc_ctx(bcpos));
+
+        {
+            let str_name =
+                self.graph.borrow().func.borrow().proto.code.load_str(idx);
+
+            self.graph
+                .borrow_mut()
+                .extra_info
+                .global_list
+                .insert(str_name);
+        }
 
         let ldg = self
             .mptr()
@@ -1010,16 +1039,28 @@ impl FBuilder {
         self.output_tos(ldg);
         return true;
     }
-    fn b_set_global(&mut self, index: Index, bcpos: u32) -> bool {
+
+    fn b_set_global(&mut self, idx: Index, bcpos: u32) -> bool {
         let index = self
             .mptr()
             .borrow_mut()
-            .new_imm_index(index, self.bc_ctx(bcpos));
+            .new_imm_index(idx, self.bc_ctx(bcpos));
 
         let name = self
             .mptr()
             .borrow_mut()
             .new_rv_load_string(index, self.bc_ctx(bcpos));
+
+        {
+            let str_name =
+                self.graph.borrow().func.borrow().proto.code.load_str(idx);
+
+            self.graph
+                .borrow_mut()
+                .extra_info
+                .global_list
+                .insert(str_name);
+        }
 
         let value = self.arg_una();
 
@@ -1079,18 +1120,23 @@ impl FBuilder {
         return true;
     }
 
-    // memory
+    // -------------------------------------------------------------------------
+    // Memory Access
+    // -------------------------------------------------------------------------
     fn b_dot_load(&mut self, idx: Index, bcpos: u32) -> bool {
         let recv = self.arg_una();
+
         let idx = self
             .mptr()
             .borrow_mut()
             .new_imm_index(idx, self.bc_ctx(bcpos));
+
         let v = self.mptr().borrow_mut().new_dot_access(
             recv,
             idx,
             self.bc_ctx(bcpos),
         );
+
         self.output_tos(v);
         return true;
     }
@@ -1103,12 +1149,14 @@ impl FBuilder {
             .mptr()
             .borrow_mut()
             .new_imm_index(idx, self.bc_ctx(bcpos));
+
         let v = self.mptr().borrow_mut().new_dot_store(
             recv,
             idx,
             value,
             self.bc_ctx(bcpos),
         );
+
         self.check_effect_node(&v);
         return true;
     }
@@ -1124,6 +1172,7 @@ impl FBuilder {
             value,
             self.bc_ctx(bcpos),
         );
+
         self.check_effect_node(&v);
         return true;
     }
@@ -1589,8 +1638,13 @@ impl FBuilder {
                 // notes this cfg_node just do a basic creation, we havent' link
                 // them together and no value related to the cfg node for now
                 let cfg_node = self.create_cfg_node(bbinfo_id as u32);
+                let is_loop = self.bbinfo_set.at(bbinfo_id as u32).is_loop;
 
-                self.env_list.push(Env::new_ptr(bbinfo_id as u32, cfg_node));
+                self.env_list.push(Env::new_ptr(
+                    bbinfo_id as u32,
+                    cfg_node,
+                    is_loop,
+                ));
                 self.env_from_bbinfo_id[bbinfo_id] =
                     (self.env_list.len() - 1) as u32;
 
@@ -1823,17 +1877,15 @@ mod fbuilder_tests {
         do_print_code(
             r#"
  let x = {'a': 1};
- let u = 0;
-
+ let i = 0;
  for {
-   x['c'] = 100;
-   u = x.c;
-   if u > 10 { 
-       break;
+    if i > 1 {
+        break;
     }
-    x = 20;
+    x = 1;
  }
- return u;
+ x.b = 20;
+ return x;
 
 "#,
         );

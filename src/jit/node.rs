@@ -1835,6 +1835,11 @@ impl Node {
         if self.is_rv_object_create() || self.is_rv_list_create() {
             return true;
         }
+    }
+    pub fn test_rv_memory(&self) -> bool {
+        if self.is_rv_object_create() || self.is_rv_list_create() {
+            return true;
+        }
         // check whether it is a PHI node, if so, iterate through each nodes
         // recursively to testify whether it is a rv memory
         if self.is_phi() {

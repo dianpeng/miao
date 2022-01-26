@@ -43,6 +43,9 @@ pub struct BBInfo {
     // The variable that has been accessed both inside and outside of the loop,
     // ie a loop induction variable
     pub loop_iv_assignment: BitVec,
+
+    // Whether this BB resides inside of the loop body or not
+    pub is_loop: bool,
 }
 
 pub struct LoopRange(Vec<(u32, u32)>);
@@ -214,6 +217,7 @@ impl BBInfo {
             rhs: Option::None,
             pred: Vec::new(),
             loop_iv_assignment: BitVec::new(),
+            is_loop: false,
         }
     }
 
@@ -226,6 +230,7 @@ impl BBInfo {
             rhs: Option::None,
             pred: Vec::new(),
             loop_iv_assignment: BitVec::new(),
+            is_loop: false,
         }
     }
 
@@ -791,7 +796,7 @@ impl BBInfoBuilder {
     }
 
     fn do_loop_iv_assignment(&mut self) {
-        // self.out.loop_range.assert_no_overlap();
+        self.out.loop_range.assert_no_overlap();
 
         let mut visited = bitvec![u32, Msb0;];
         visited.resize(self.out.bbinfo_list.len(), false);
@@ -799,6 +804,8 @@ impl BBInfoBuilder {
         for (start, end) in self.out.loop_range.0.iter() {
             let bb_list = self.get_bb_from_range(*start, *end);
             for bb_id in bb_list.iter() {
+                self.out.bbinfo_list[*bb_id as usize].is_loop = true;
+
                 if !visited[*bb_id as usize] {
                     *visited.get_mut(*bb_id as usize).unwrap() = true;
 

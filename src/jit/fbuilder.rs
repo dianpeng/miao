@@ -392,15 +392,25 @@ impl FBuilder {
         return Envptr::clone(&self.env_list[idx as usize].clone());
     }
 
-    fn cur_effect(&self) -> Option<Nref> {
+    // find out the first none memory read/write effect, during IR construction
+    // phase, only RvMemIndexLoad/RvMemDotLoad are been considered as read
+    // effect.
+    fn cur_memory_write_effect(&self) -> Nref {
         let cur_cfg = self.cur_env().borrow().cfg.clone();
-        if cur_cfg.borrow().has_effect() {
-            return Option::Some(Nref::clone(
-                cur_cfg.borrow().effect.last().unwrap(),
-            ));
-        } else {
-            return Option::None;
+        debug_assert!(cur_cfg.borrow().effect.len() >= 1);
+
+        let mut cur_idx: u32 = cur_cfg.borrow().effect.len() as u32 - 1;
+        while cur_idx > 1 {
+            let n = cur_cfg.borrow().effect[cur_idx as usize].clone();
+            match n.borrow().op.op {
+                Opcode::RvMemIndexLoad | Opcode::RvMemDotLoad => (),
+                _ => return n.clone(),
+            };
+
+            cur_idx -= 1;
         }
+
+        return cur_cfg.borrow().effect[0].clone();
     }
 
     fn has_cur_env(&self) -> bool {
@@ -507,16 +517,12 @@ impl FBuilder {
     fn add_side_effect_dependency(&mut self, x: &mut Nref) -> Option<Nref> {
         let should_have_side_effect = x.borrow().test_rv_memory();
         if should_have_side_effect {
-            match self.cur_effect() {
-                Option::Some(eff) => {
-                    let after = self
-                        .mptr()
-                        .borrow_mut()
-                        .new_rv_effect_after(x.clone(), eff);
-                    return Option::Some(after);
-                }
-                _ => (),
-            };
+            let effect = self.cur_memory_write_effect();
+            let after = self
+                .mptr()
+                .borrow_mut()
+                .new_rv_effect_after(x.clone(), effect);
+            return Option::Some(after);
         }
         return Option::None;
     }
@@ -1876,16 +1882,21 @@ mod fbuilder_tests {
     fn basic() {
         do_print_code(
             r#"
- let x = {'a': 1};
  let i = 0;
+
+ let t = xx;
+ let u = t;
+
  for {
     if i > 1 {
         break;
     }
-    x = 1;
+    i += 1;
+
+    u = 30;
+    u = t;
  }
- x.b = 20;
- return x;
+ return u;
 
 "#,
         );

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::jit::node::*;
 use crate::object::object::*;
@@ -8,13 +8,6 @@ use crate::object::object::*;
 pub type Jitptr = Rc<RefCell<Jit>>;
 pub type FGraphptr = Rc<RefCell<FGraph>>;
 pub type GraphList = Vec<FGraphptr>;
-
-// loop BB's mem_object access list
-#[derive(Clone)]
-pub struct LoopBBMemAccessInfo {
-    pub cfg: Nref,
-    pub mutation: Vec<Nref>,
-}
 
 // Used by mem_opt/global_opt to fix up the graph
 #[derive(Clone)]
@@ -24,9 +17,6 @@ pub struct FGraphExtraInfo {
 
     // lists of accessed global variable name in the graph
     pub global_list: HashSet<String>,
-
-    // loop BB's mem_object access lists, ie which are accessed
-    pub mem_loop_access: Vec<LoopBBMemAccessInfo>,
 }
 
 #[derive(Clone)]
@@ -58,7 +48,6 @@ impl FGraphExtraInfo {
         FGraphExtraInfo {
             mem_node: Vec::new(),
             global_list: HashSet::new(),
-            mem_loop_access: Vec::new(),
         }
     }
 }

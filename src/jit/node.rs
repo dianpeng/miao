@@ -216,6 +216,13 @@ pub struct Node {
 
     // Whether the node is been treated as dead or not
     pub dead: bool,
+
+    // A opaque information field only used by each pass, the information stored
+    // here is unknown to rest of the framework and should never be assumed that
+    // the information will persistent cross pass boundary. For example the AA
+    // use this field to indicate that this node is a alias node already since
+    // replace all use of node is very complicated.
+    pub external_info: u32,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -239,6 +246,15 @@ pub enum OpTier {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Opcode {
     // Pseudo nodes
+
+    // indicate the start of the effect chain, notes this is just a effect
+    // placeholder, used to indicate the effect related stuff.
+    RvEffectStart,
+
+    // indicates the happened after, ie loading a memory position should be
+    // happened after a certain operation. The memory location cannot be bound
+    // to any order since memory location is a value, not a operation
+    RvEffectAfter,
 
     // placeholder node, used to mark that the value is not materialized yet
     Placeholder,
@@ -478,10 +494,6 @@ pub enum Opcode {
 
     // Represent the function input arguments,
     RvParam,
-
-    // Effect order operation, used to help order of memory access
-    RvEffectStart,
-    RvEffectAfter,
 
     // Builtins
     RvAssert1,
@@ -1502,6 +1514,20 @@ impl Node {
         }
     }
 
+    // Predecessor filter
+    pub fn pred_control(x: &mut Nref) -> Vec<Nref> {
+        let mut o: Vec<Nref> = Vec::new();
+
+        for x in x.borrow().def_use.iter() {
+            if let DefUse::Control(p) = x {
+                if let Option::Some(pred) = p.upgrade() {
+                    o.push(pred);
+                }
+            }
+        }
+        return o;
+    }
+
     // If Y is been used by X, then we remove Y from X's usage list.
     pub fn remove_use(x: &mut Nref, y: &Nref) -> bool {
         let r = Node::find_use(y, x);
@@ -1677,6 +1703,27 @@ impl Node {
         Node::add_control(phi, cfg);
     }
 
+    // tesitfy 2 nodes are identical or not. The identical means the node can
+    // be literal replaced with each other, notes the identical node are not
+    // same as GVN's node equal.
+    //
+    // Basically identical node are
+    //
+    //   1) same node with same Nref
+    //
+    //   2) or same immediate node
+    pub fn node_identical(lhs: &Nref, rhs: &Nref) -> bool {
+        if Nref::ptr_eq(lhs, rhs) {
+            return true;
+        }
+
+        if lhs.borrow().is_imm() && rhs.borrow().is_imm() {
+            return lhs.borrow().imm == rhs.borrow().imm;
+        }
+
+        return false;
+    }
+
     // -----------------------------------------------------------------------
     // Factory Method
     // -----------------------------------------------------------------------
@@ -1693,6 +1740,7 @@ impl Node {
             alias: Option::None,
             type_hint: MainType::Unknown,
             dead: false,
+            external_info: 0,
         }));
     }
 
@@ -1709,6 +1757,7 @@ impl Node {
             alias: Option::None,
             type_hint: MainType::Unknown,
             dead: false,
+            external_info: 0,
         }));
     }
 
@@ -1835,6 +1884,7 @@ impl Node {
         if self.is_rv_object_create() || self.is_rv_list_create() {
             return true;
         }
+        return false;
     }
     pub fn test_rv_memory(&self) -> bool {
         if self.is_rv_object_create() || self.is_rv_list_create() {

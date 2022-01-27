@@ -1,98 +1,22 @@
-// Memory Optimization
-//
-//   ---------------------------------------------------------------------------
-//
-//   This pass will mainly handle the memory related operation.
-//
-//   1. During the IR construction, the memory related operation is passively
-//      strict ordered and put into its corresponding BB, and also the use of
-//      memory object, ie via RvListCreate and RvObjectCreate opcode, is been
-//      ordered via RvEffectAfter node with the current side effect nodes.
-//
-//   2. The graph is verbose and also overly strict since the IR construction
-//      does not perform alias analysis. We don't know the memory alias info.
-//
-//   This pass will mainly reconstruct much more loose order for the following
-//   memory access :
-//
-//     1. RvMemIndexLoad
-//     2. RvMemIndexStore
-//     3. RvMemObjectLoad
-//     4. RvMemObjectStore
-//     5. RvEffectAfter
-//     6. RvEffectStart
-//
-//   The above 6 instructions are been hoisted, ie the first 4 instructions
-//   are been lifted from the CFG's effect lists but been ordered by each
-//   instruction's effect node; the RvEffectAfter will be rewritten in the newly
-//   constructed effect order; and the RvEffectStart will be eliminated when the
-//   memory location of order node is known to us
-//
-//   ---------------------------------------------------------------------------
-//
-//   The algorithm has 2 major passes:
-//
-//   Pass 1, alias anlysis of memory location
-//
-//     This pass will just use a simple data flow algorithm to do alias analysis
-//     and it mainly outputs per basic block information.
-//
-//       1) It generates a memory side effect in terms of memory alias for each
-//          side effect nodes located in each BB
-//
-//       2) It generates a memory snapshot compressed for each BB after the BB
-//          been executed.
-//
-//
-//     This pass just generates external information and does not break the CFG
-//     the node in CFG is still the same.
-//
-//   Pass 2, does hoist of each node located inside of the BB's effect lits
-//
-//     Based on the previous AA, we can learn that each effect statement's
-//     memory impact, by that we can know how to relink the dependency chain
-//     of each effect node which manipulates memory location known to us, for
-//     operation that involve memory that is not known to us, we keep them
-//     still inside of the CFG's effect list.
-//
-//
-//     Additionally, due to the Pass 1, the loopback edge generated effect is
-//     also known to us, so the effect phi can be correctly inserted if needed,
-//     since we know all BB's predecessor's memory location status before merging
-//     them.
-//
-//
-//     Additionally, some optimization will be performed on the fly
-//
-//       1) load sink will be performed in this phase since the alias information
-//          is clear and we can just do load sink based on the dependency chain
-//          directly.
-//
-//       2) RvEffectAfter/RvEffectStart can be rewritten correctly. We just need
-//          to modify their dependency based on the lastest AA's result.
-//
-//     The second pass's secanning of node is sparse, since we only care about
-//     the node right inside of the effect lists. For RvEffectXXX, we use extra
-//     information list to scan.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::jit::node::*;
 use bitvec::prelude::*;
 
-type LoopEffectPhiList = Vec<(u32, Nref)>;
+pub type LoopEffectPhiList = Vec<(u32, Nref)>;
 
 // Memory effect
-struct Memory {
-    mem: Oref, // memory node
+pub struct Memory {
+    pub mem: Oref, // memory node
 
     // last write_effect node happened, can be phi if killed, then just None,
     // which means user should treat it as a kill, ie total order
-    write_effect: Option<Nref>,
+    pub write_effect: Option<Nref>,
 }
 
-enum MemOp {
+// Memory operation
+pub enum MemOp {
     // indicate that the specified Nref node been aliased, which means the mem
     // location should be unknown to us in terms of dependency. The alias is
     // vector due to the fact a call instruction can alias multiple memory
@@ -106,7 +30,7 @@ enum MemOp {
     Nothing,
 }
 
-type MemOpList = Vec<MemOp>;
+pub type MemOpList = Vec<MemOp>;
 
 fn mem_addr(n: &Nref) -> Option<Nref> {
     let inner_node = match n.borrow().op.op {
@@ -126,9 +50,9 @@ fn mem_addr(n: &Nref) -> Option<Nref> {
 }
 
 // Effect environment, one per BB, and been kept alive until the analysis done
-struct EnvMemAA {
+pub struct BlkAA {
     // Current control flow graph
-    cfg: Nref,
+    pub cfg: Nref,
 
     // A lists of known exclusive(none alias) memory position, if not shows up
     // then the address been assumed as aliased with each other, ie should be
@@ -139,31 +63,31 @@ struct EnvMemAA {
     //
     // Notes, after the first pass dataflow, this mem_list reflect the memory
     // status |AFTER| this BB been evaluated.
-    mem_list: Vec<Memory>,
+    pub mem_list: Vec<Memory>,
 
     // Initialized mem_list, used by later on phase, one can directly clone
     // the array. This array correctly setup the loop effect phi node.
     //
     // The mem_list indicates the status of BB after evaluation/meet operator
     // the init_mem_list indicates the status of BB before evaluation/mee operator
-    init_mem_list: Vec<Memory>,
+    pub init_mem_list: Vec<Memory>,
 
     // A list of status after each side effect node been executed, the element
     // of list indicates the memory modification generated after each side effect
     // node been evaluated
-    after_effect_list: MemOpList,
+    pub after_effect_list: MemOpList,
 
     // lists of effect phi that requires patching due to the loopback edge
-    loop_effect_phi_list: LoopEffectPhiList,
+    pub loop_effect_phi_list: LoopEffectPhiList,
 
     // index of current scanning effect node's index in current cfg's effect
     // list. Used to generate after_effect_list's element etc ..
     effect_index: usize,
 }
 
-type Eaaptr = Rc<RefCell<EnvMemAA>>;
+pub type Aaptr = Rc<RefCell<BlkAA>>;
 
-impl EnvMemAA {
+impl BlkAA {
     fn is_unknown(&self) -> bool {
         return self.write_effect.is_none();
     }
@@ -172,7 +96,7 @@ impl EnvMemAA {
     }
 }
 
-// Phase 1, Alias Analysis
+// Alias Analysis
 //
 //  T :=
 //
@@ -201,21 +125,21 @@ impl EnvMemAA {
 // status, and afterwards the modification will be recorded. Each BB will have
 // status before and after.
 
-struct AA {
+pub struct AA {
     j: Jitptr,
     graph: FGraphptr,
 
     env_map: Vec<u32>,
-    env_list: Vec<Eaaptr>,
+    env_list: Vec<Aaptr>,
 
-    cur_env: Eaaptr,
+    cur_env: Aaptr,
     visited: BitVec,
     total_mem: u32,
 }
 
 impl AA {
     // -------------------------------------------------------------------------
-    // Enter into the specified CFG, which will create a EnvMemAA object
+    // Enter into the specified CFG, which will create a BlkAA object
     fn enter_env(&mut self, cfg: Nref) {
         debug_assert!(cfg.borrow().is_cfg());
 
@@ -307,10 +231,10 @@ impl AA {
             }
         }
 
-        // Finish up the creation of EnvMemAA and set it as current env
-        let envptr = EnvMemAA::new_ptr(mem_list, cfg, loop_effect_phi_list);
+        // Finish up the creation of BlkAA and set it as current env
+        let envptr = BlkAA::new_ptr(mem_list, cfg, loop_effect_phi_list);
 
-        self.env_list.push(Eaaptr.clone());
+        self.env_list.push(Aaptr.clone());
         self.cur_env = envptr;
     }
 
@@ -351,7 +275,7 @@ impl AA {
         }
     }
 
-    fn cur_env(&self) -> Eaaptr {
+    fn cur_env(&self) -> Aaptr {
         return self.cur_env.clone();
     }
 
@@ -479,7 +403,7 @@ impl AA {
         return Option::Some(());
     }
 
-    fn run(&mut self) {
+    pub fn run(&mut self) {
         let cfg = self.graph.borrow().cfg_start.clone();
 
         for c in CfgPOIter::new(&cfg, self.j.borrow().max_node_id()) {
@@ -542,289 +466,8 @@ impl AA {
 
     // -------------------------------------------------------------------------
     // Public interface exported from AA, used by phase2 Env
-    fn env_aa_at(&self, cfg_id: Nid) -> Eaaptr {
+    pub fn env_aa_at(&self, cfg_id: Nid) -> Aaptr {
         let id = self.env_map[Nid];
         return self.env_list[id].clone();
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Phase 2, Optimization
-
-// BB external information during the memory optimization passes
-struct EnvMem {
-    cfg: Nref,
-    aa: Eaaptr,
-    mem_list: Vec<Memory>,
-}
-
-type Ememptr = Rc<RefCell<EnvMem>>;
-
-struct MemOpt {
-    j: Jitptr,
-    graph: FGraphptr,
-    aa: AA,
-
-    env_list: Vec<Ememptr>,
-    cur_env: Ememptr,
-    visited: BitVec,
-    total_mem: u32,
-}
-
-impl MemOpt {
-    fn write_effect_at(&self, mem_node: &Nref) -> Option<Nref> {
-        debug_assert!(n.borrow().is_rv_memory());
-
-        let pos = self
-            .cur_env()
-            .borrow()
-            .env_list
-            .iter()
-            .position(|x| Nref::ptr_eq(&x.mem, n))
-            .unwrap();
-
-        return self.cur_env().borrow().mem_list[pos].write_effect.clone();
-    }
-
-    fn update_write_effect(&self, mem_node: &Nref, write_effect: Nref) {
-        let pos = self
-            .cur_env()
-            .borrow()
-            .env_list
-            .iter()
-            .position(|x| Nref::ptr_eq(&x.mem, n))
-            .unwrap();
-
-        self.cur_env().borrow().mem_list[pos].write_effect =
-            Option::Some(write_effect);
-    }
-
-    fn hoist_node_read(
-        &mut self,
-        idx: u32,
-        mut effect_node: Nref,
-    ) -> Option<()> {
-        let mem_node = mem_addr(&effect_node)?;
-        let effect = self.write_effect_at(&mem_node)?;
-
-        // try perform load sink optimization
-        if self
-            .try_load_sink(&mem_node, &effect, effect_node.clone())
-            .is_some()
-        {
-            return;
-        }
-
-        self.remove_effect_node_from_effect_list(idx);
-        Node::add_effect(&mut effect_node, effect);
-    }
-
-    fn hoist_node_write(
-        &mut self,
-        idx: u32,
-        mut effect_node: Nref,
-    ) -> Option<()> {
-        let mem_node = mem_addr(&effect_node)?;
-        let effect = self.write_effect_at(&mem_node)?;
-
-        self.remove_effect_node_from_effect_list(idx);
-        Node::add_effect(&mut effect_node, effect);
-
-        // update the memory effect node at that position
-        self.update_write_effect(&mem_node, effect_node);
-    }
-
-    // Load Sinking optimization
-    //
-    //   try to directly forward the load member field known to us from its
-    //   current position to where this instruction issued.
-
-    fn try_load_sink(
-        &self,
-        mem_node: &Nref,
-        write_effect: &Nref,
-        n: Nref,
-    ) -> Option<()> {
-        // check whether the load node is a constant node, ie if it is a index
-        // load then the index must be immediate, or a dot load, we will just
-        // convert the load field into Imm object
-        let field: Imm = {
-            let op = n.borrow().op.op.clone();
-            match op {
-                Opcode::RvMemIndexLoad | Opcode::RvMemDotLoad => {
-                    let idx = n.borrow().value[1].clone();
-                    if !idx.borrow().is_imm() {
-                        return Option::None;
-                    }
-                    idx.imm
-                }
-                _ => unreachable!(),
-            }
-        };
-
-        let mut cur_write_effect = write_effect;
-
-        loop {
-            // check whether the current write effect can satisfy the load
-            match cur_write_effect.borrow().op.op {
-                Opcode::RvMemIndexStore | Opcode::RvMemDotStore => {
-                    let idx = n.borrow().value[1].clone();
-                    if idx.borrow().is_imm() && idx.borrow().imm == field {
-                        let value = n.borrow().value[1].clone();
-                        Node::replace_and_dispose(&mut n, value);
-                        return Option::Some(());
-                    }
-                }
-                _ => break, // break the loop, the write_effect node is unknown
-            };
-
-            // must have just one single effect predecessor
-            if cur_write_effect.borrow().effect.len() != 1 {
-                break;
-            }
-
-            cur_write_effect = cur_write_effect.borrow().effect[0].clone();
-        }
-
-        return Option::None;
-    }
-
-    fn patch_on_effect_after(&self, mut order: Nref) -> Option<()> {
-        debug_assert!(order.borrow().op.op == Opcode::RvEffectAfter);
-
-        let addr = mem_addr(&order.borrow().value[0].clone())?;
-        let effect = self.write_effect_at(&addr)?;
-        if !Nref::ptr_eq(&dep, &effect) {
-            // Rewrite the effect node from value input to its effect node to
-            // indicate that it has been rewritten
-            Node::remove_value(&mut order, 1);
-            Node::add_effect(&mut order, effect);
-        }
-        return Option::Some(());
-    }
-
-    fn alias_mem(&mut self, n: &Nref) {
-        let env = self.cur_env();
-
-        // update the write_effect in current env's mem_list
-        for x in env.borrow_mut().mem_list.iter_mut() {
-            if Nref::ptr_eq(&x.mem, n) {
-                x.write_effect = Option::None;
-                break;
-            }
-        }
-    }
-
-    fn update_write_effect(&mut self, mem: &Nref, effect: Nref) {
-        let env = self.cur_env();
-
-        // update the write_effect in current env's mem_list
-        for x in env.borrow_mut().mem_list.iter_mut() {
-            if Nref::ptr_eq(&x.mem, mem) {
-                x.write_effect = Option::Some(effect);
-                return;
-            }
-        }
-
-        unreachable!();
-    }
-
-    fn apply_memory_impact(&mut self, idx: u32) {
-        let aa_ptr = self.cur_aa();
-
-        match aa_ptr.borrow().after_effect_list[idx] {
-            MemOp::Alias(alist) => {
-                for n in alist.iter() {
-                    self.alias_mem(n);
-                }
-            }
-
-            MemOp::Write(eff) => {
-                let mem_node = mem_addr(&eff).unwrap();
-                self.update_write_effect(&mem_node, eff.clone());
-            }
-
-            _ => (),
-        };
-    }
-
-    // Environment management, ie setup the mem_list
-    fn enter_env(&mut self, cfg: &Nref) {
-        let aa_ptr = self.aa.env_aa_at(cfg.borrow().id);
-        let env_ptr = EnvMem::new_ptr(cfg.clone(), aa_ptr);
-        self.env_list.push(env_ptr.clone());
-        self.cur_env = env_ptr;
-    }
-
-    fn leave_env(&mut self) {}
-
-    // Finding out a effect node's RvEffectAfter use
-    fn get_effect_order_list(&self, enode: &Nref) -> Vec<Nref> {
-        let o: Vec<Nref> = Vec::new();
-
-        for def_use in enode.borrow().def_use.iter() {
-            if let DefUse::Value(wptr) = def_use {
-                if let maybe_effect = wptr.upgrade() {
-                    if maybe_effect.borrow().op.op == Opcode::RvEffectAfter {
-                        o.push(maybe_effect);
-                    }
-                }
-            }
-        }
-
-        return o;
-    }
-
-    // Scanning phase of memory optimization. Since all the memory related ops
-    // are located inside of each CFG's effect list before memory optimize pass,
-    // we can just sparsely scan the instruction, additionally since we already
-    // scan each node's operands, so no need to revisit them again. We just scan
-    // the effect node itself and try to hoist them out by setting up each node's
-    // effect dependency based on AA's results. Additionally, we will revisit
-    // the RvEffectAfter node and relink its dependency node based on newly
-    // constructed alias information.
-    fn opt_mem(&mut self) {
-        let start = self.graph.borrow().cfg_start.clone();
-        for cfg in CfgPOIter::new(&cfg, self.j.borrow().max_node_id()) {
-            self.enter_env(&cfg);
-
-            let mut idx = 0;
-            for enode in cfg.borrow().effect.iter() {
-                self.apply_memory_impact(idx);
-
-                match enode.borrow().op.op {
-                    Opcode::RvMemIndexLoad | Opcode::RvMemDotLoad => {
-                        self.hoist_node_read(idx, enode.clone());
-                    }
-                    Opcode::RvMemIndexStore | Opcode::RvMemDotStore => {
-                        self.hoist_node_write(idx, enode.clone());
-                    }
-                    _ => (),
-                };
-
-                // patching the effect order node
-                {
-                    let effect_order_list =
-                        self.get_effect_order_list(&effect_node);
-
-                    for order in effect_order_list.iter() {
-                        self.patch_on_effect_after(order.clone());
-                    }
-                }
-
-                idx += 1;
-            }
-
-            self.leave_env();
-        }
-    }
-
-    fn run(&mut self) {
-        // (0) perform alias analysis to get enough information for later
-        //     optimization
-        self.aa.run();
-
-        // (1) run the memory optimization
-        self.opt_mem();
     }
 }

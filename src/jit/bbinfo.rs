@@ -547,7 +547,7 @@ impl BBInfoBuilder {
                         wqueue.push_back(idx);
                     }
 
-                    debug_assert!(cp < last_jump);
+                    debug_assert!(cp <= last_jump);
                     self.out.loop_range.add((cp, last_jump));
                 }
 
@@ -796,7 +796,7 @@ impl BBInfoBuilder {
     }
 
     fn do_loop_iv_assignment(&mut self) {
-        self.out.loop_range.assert_no_overlap();
+        // self.out.loop_range.assert_no_overlap();
 
         let mut visited = bitvec![u32, Msb0;];
         visited.resize(self.out.bbinfo_list.len(), false);

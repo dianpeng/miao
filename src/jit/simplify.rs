@@ -109,7 +109,7 @@ impl RvSimplify {
         return self.j.borrow().mpool.clone();
     }
 
-    fn simplify_phi(&mut self, mut x: Nref) {
+    fn simplify_phi(&mut self, x: Nref) {
         simplify_phi_node(x);
     }
 

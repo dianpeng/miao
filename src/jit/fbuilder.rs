@@ -892,8 +892,8 @@ impl FBuilder {
     // List
     // TODO(dpeng): Optimize list to support hinting of the list size for reserve
     //   memory usage internally.
-    fn b_list_create(&mut self, len: u32, bcpos: u32) -> bool {
-        let mut val = self
+    fn b_list_create(&mut self, _: u32, bcpos: u32) -> bool {
+        let val = self
             .mptr()
             .borrow_mut()
             .new_rv_list_create(self.bc_ctx(bcpos));
@@ -932,8 +932,8 @@ impl FBuilder {
     }
 
     // Object
-    fn b_object_create(&mut self, len: u32, bcpos: u32) -> bool {
-        let mut val = self
+    fn b_object_create(&mut self, _: u32, bcpos: u32) -> bool {
+        let val = self
             .mptr()
             .borrow_mut()
             .new_rv_object_create(self.bc_ctx(bcpos));
@@ -1883,18 +1883,14 @@ mod fbuilder_tests {
         do_print_code(
             r#"
  let i = 0;
-
- let t = xx;
- let u = t;
+ let j = 0;
 
  for {
-    if i > 1 {
-        break;
+    v = 20;
+    for {
+        u = 10;
     }
-    i += 1;
-
-    u = 30;
-    u = t;
+    g = 30;
  }
  return u;
 

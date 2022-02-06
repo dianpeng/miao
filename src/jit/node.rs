@@ -1,5 +1,6 @@
 use crate::ic::ftype::*;
 use crate::jit::j::*;
+use crate::object::object::*;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1616,6 +1617,40 @@ impl Node {
         Node::remove_control(x, i);
     }
 
+    // global node convinient method, if node n is not global node, this
+    // function will crash
+    pub fn global_name(n: &Nref, func: &FuncRef) -> String {
+        assert!(n.borrow().is_global());
+        let name = n.borrow().value[0].clone();
+        if name.borrow().is_imm_str() {
+            match &name.borrow().imm {
+                Imm::ImmStr(x) => return x.to_string(),
+                _ => unreachable!(),
+            };
+        } else {
+            assert!(name.borrow().op.op == Opcode::RvLoadString);
+            let idx = name.borrow().value[0].clone();
+            assert!(idx.borrow().is_imm_index());
+            let idx_val = match &idx.borrow().imm {
+                Imm::Index(v) => *v,
+                _ => unreachable!(),
+            };
+            return func.borrow().proto.code.load_str(idx_val);
+        }
+    }
+
+    pub fn upvalue_index(n: &Nref, func: &FuncRef) -> u32 {
+        assert!(n.borrow().is_upvalue());
+        let index = n.borrow().value[0].clone();
+        assert!(index.borrow().is_imm_index());
+        let idx = match &index.borrow().imm {
+            Imm::Index(v) => *v,
+            _ => unreachable!(),
+        };
+        debug_assert!(idx <= func.borrow().proto.upvalue.len() as u32);
+        return idx;
+    }
+
     // Replace placeholder node in the value dependency list
     pub fn replace_placeholder_value(x: &mut Nref, value: Nref) -> usize {
         let mut i = 0;
@@ -1860,6 +1895,13 @@ impl Node {
         return Op::is_placeholder(&self.op);
     }
 
+    pub fn is_global(&self) -> bool {
+        return Op::is_global(&self.op);
+    }
+    pub fn is_upvalue(&self) -> bool {
+        return Op::is_upvalue(&self.op);
+    }
+
     pub fn is_value(&self) -> bool {
         return Op::is_value(&self.op);
     }
@@ -2017,6 +2059,24 @@ impl Op {
             || x.tier == OpTier::Low
             || x.tier == OpTier::Imm
             || x.tier == OpTier::Placeholder;
+    }
+
+    fn is_global(x: &Oref) -> bool {
+        match x.op {
+            Opcode::RvSetGlobal | Opcode::RvLoadGlobal => {
+                return true;
+            }
+            _ => return false,
+        };
+    }
+
+    fn is_upvalue(x: &Oref) -> bool {
+        match x.op {
+            Opcode::RvSetUpvalue | Opcode::RvLoadUpvalue => {
+                return true;
+            }
+            _ => return false,
+        };
     }
 
     // factory method categories ----------------------------------------------
@@ -5601,8 +5661,8 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_effect_start(&mut self, bc: BcCtx) -> Nref {
-        let mut n = Node::new(
+    pub fn new_rv_effect_start(&mut self, _: BcCtx) -> Nref {
+        let n = Node::new(
             Oref::clone(&self.op_rv_effect_start),
             self.node_next_id(),
             BcCtx::new_unknown(),
@@ -6164,7 +6224,7 @@ impl Mpool {
     //                          Control Flow Graph
     // -------------------------------------------------------------------------
     pub fn new_cfg_start(&mut self, bcid: BcCtx) -> Nref {
-        let mut n = Node::new(
+        let n = Node::new(
             Oref::clone(&self.op_cfg_start),
             self.node_next_id(),
             bcid,
@@ -6174,14 +6234,14 @@ impl Mpool {
     }
 
     pub fn new_cfg_end(&mut self, bcid: BcCtx) -> Nref {
-        let mut n =
+        let n =
             Node::new(Oref::clone(&self.op_cfg_end), self.node_next_id(), bcid);
         self.watch_node(&n);
         return n;
     }
 
     pub fn new_cfg_merge_return(&mut self, bcpos: BcCtx) -> Nref {
-        let mut n = Node::new(
+        let n = Node::new(
             Oref::clone(&self.op_cfg_merge_return),
             self.node_next_id(),
             bcpos,
@@ -6191,7 +6251,7 @@ impl Mpool {
     }
 
     pub fn new_cfg_merge_halt(&mut self, bcpos: BcCtx) -> Nref {
-        let mut n = Node::new(
+        let n = Node::new(
             Oref::clone(&self.op_cfg_merge_halt),
             self.node_next_id(),
             bcpos,

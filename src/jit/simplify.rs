@@ -25,6 +25,14 @@ impl NodePass for RvSimplify {
                 self.simplify_phi(Nref::clone(&cur));
             }
 
+            // RvMemAccess
+            // The IRBuilder will insert RvMemAccess for any loop_iv_placeholder
+            // but if the iv placeholder turns out to be a none memory node, then
+            // we don't actually need the RvMemAccess for access the load.
+            Opcode::RvMemAccess => {
+                self.simplify_mem_access(Nref::clone(&cur));
+            }
+
             // RvLoad
             Opcode::RvLoadInt => {
                 self.simplify_ld_int(Nref::clone(&cur));
@@ -111,6 +119,16 @@ impl RvSimplify {
 
     fn simplify_phi(&mut self, x: Nref) {
         simplify_phi_node(x);
+    }
+
+    fn simplify_mem_access(&mut self, mut x: Nref) {
+        let v = x.borrow().una();
+        if v.borrow().generate_memory() {
+            return;
+        }
+
+        // replace all the use of node X with its input value V
+        Node::replace_and_dispose(&mut x, v);
     }
 
     fn simplify_ld_int(&mut self, mut x: Nref) {

@@ -67,6 +67,7 @@ use crate::jit::j::*;
 use crate::jit::node::*;
 use bitvec::prelude::*;
 
+type LoopEffectJoinList = Vec<(u32, Nref)>;
 type R = Option<()>;
 
 // Represent a simple dependency chain, ie following dependency will be observed

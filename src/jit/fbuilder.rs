@@ -132,6 +132,7 @@ impl FBuilder {
             // pre order (ignore the loop back edge), so when a BB is been
             // visiting, its predecessor nodes should already have been visited.
             let pred_len = self.bbinfo_set.at(bbinfo_id).pred.len();
+            let mut loop_tail_bid: Option<u32> = Option::None;
 
             match pred_len {
                 0 => {
@@ -232,6 +233,7 @@ impl FBuilder {
 
                     let mut stk_idx = 0;
                     let mut vstk = ValStack::new();
+
                     let bbinfo_bcfrom = self.bbinfo_set.at(bbinfo_id).bc_from;
 
                     while stk_idx < stk_size {
@@ -263,6 +265,14 @@ impl FBuilder {
                                         ),
                                     Nref::clone(&prev_env.borrow().cfg),
                                 );
+
+                                if loop_tail_bid.is_some() {
+                                    let already_bid =
+                                        *loop_tail_bid.as_ref().unwrap();
+                                    assert!(already_bid == p.bid);
+                                }
+
+                                loop_tail_bid = Option::Some(p.bid);
                             } else {
                                 let l = prev_env.borrow().stack.len() as u32;
                                 if stk_idx == l {
@@ -333,21 +343,42 @@ impl FBuilder {
                 }
             };
 
-            {
+            if let Option::Some(tail_bid) = loop_tail_bid {
                 let loop_iv_size =
                     self.bbinfo_set.at(bbinfo_id).loop_iv_assignment.len();
 
                 let v_len = new_env.borrow().stack.len();
+
+                // insert the loop_iv into loop tail's loop_iv patch list, the
+                // patch of loop iv can only be applied when all the block inside
+                // of the loop range been visited, otherwise the patch is invalid
+                // when we finish visiting the loop tail, ie the block which
+                // generate the loop back edge, all the node that is reachable
+                // from the loop back BB should already be done, which means
+                // we can patch loop_iv.
+                //
+                // Notes, our bytecode cannot generate none-reducible graph
+                let tail_env = self.get_env(tail_bid);
+
                 let mut idx = 0;
+
                 while idx < v_len && idx < loop_iv_size {
                     if self.bbinfo_set.at(bbinfo_id).loop_iv_assignment[idx] {
                         let phi = Nref::clone(&new_env.borrow().stack[idx]);
                         if phi.borrow().is_phi() {
-                            new_env.borrow_mut().loop_iv.push((idx as u32, phi));
+                            tail_env
+                                .borrow_mut()
+                                .loop_iv
+                                .push((idx as u32, phi));
                         }
                     }
                     idx += 1;
                 }
+            } else {
+                // except for loop header, all the assignment will be empty
+                assert!(
+                    self.bbinfo_set.at(bbinfo_id).loop_iv_assignment.len() == 0
+                );
             }
 
             (new_env, new_env_idx)
@@ -514,16 +545,52 @@ impl FBuilder {
     // object will not be correctly ordered inside of the graph.
     //
     // =====================================================================
+    fn maybe_generate_memory(x: &Nref) -> bool {
+        if x.borrow().is_rv_memory_access() {
+            return true;
+        }
+
+        // loop_iv_placeholder is a placeholder inside of the graph which may
+        // or may not be assigned to a memory node, here, we will have to make
+        // a conservative guess. The simplify process will take care of situation
+        // like this, ie all the node does not yield any memory use but still
+        // be referenced by a RvMemAccess node.
+        if x.borrow().is_placeholder() {
+            return true;
+        }
+
+        if x.borrow().is_phi() {
+            for x in x.borrow().value.iter() {
+                if FBuilder::maybe_generate_memory(&x) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn add_side_effect_dependency(&mut self, x: &mut Nref) -> Option<Nref> {
-        let should_have_side_effect = x.borrow().test_rv_memory();
+        let should_have_side_effect = FBuilder::maybe_generate_memory(x);
         if should_have_side_effect {
             let effect = self.cur_memory_write_effect();
+
             let after = self
                 .mptr()
                 .borrow_mut()
-                .new_rv_effect_after(x.clone(), effect);
+                .new_rv_mem_access(x.clone(), effect);
+
+            // add the effect node into current BB's effect list
+            {
+                debug_assert!(after.borrow().op.side_effect);
+                let cur_env = self.cur_env();
+                Node::add_effect(
+                    &mut cur_env.borrow_mut().cfg,
+                    Nref::clone(&after),
+                );
+            }
             return Option::Some(after);
         }
+
         return Option::None;
     }
 
@@ -1882,17 +1949,9 @@ mod fbuilder_tests {
     fn basic() {
         do_print_code(
             r#"
- let i = 0;
- let j = 0;
 
- for {
-    v = 20;
-    for {
-        u = 10;
-    }
-    g = 30;
- }
- return u;
+a = a;
+return i;
 
 "#,
         );

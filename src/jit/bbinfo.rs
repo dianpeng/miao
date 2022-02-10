@@ -764,8 +764,14 @@ impl BBInfoBuilder {
         return assignment;
     }
 
-    fn get_bb_from_range(&self, start: u32, end: u32) -> Vec<u32> {
+    // Get a lists of bb from the specified bytecode position range. Notes
+    fn get_bb_from_range(&self, start: u32, end: u32) -> (Vec<u32>, u32) {
         let mut o = Vec::<u32>::new();
+
+        let loop_head_bid = match &self.out.bc_from_map_bbinfo[start as usize] {
+            Option::Some(bb_idx) => self.out.bbinfo_list[*bb_idx as usize].id,
+            _ => unreachable!(),
+        };
 
         // Notes, the bb_from_map_bbinfo is naturally sorted with bytecode pos
         // in ascending order
@@ -792,7 +798,20 @@ impl BBInfoBuilder {
             };
         }
 
-        return o;
+        return (o, loop_head_bid);
+    }
+
+    fn merge_assignment(vsize: usize, dst: &mut BitVec, src: &BitVec) {
+        let len = src.len();
+        if dst.len() != vsize {
+            dst.resize(vsize, false);
+        }
+
+        for i in 0..len {
+            if src[i] {
+                *dst.get_mut(i).unwrap() = true;
+            }
+        }
     }
 
     fn do_loop_iv_assignment(&mut self) {
@@ -802,7 +821,10 @@ impl BBInfoBuilder {
         visited.resize(self.out.bbinfo_list.len(), false);
 
         for (start, end) in self.out.loop_range.0.iter() {
-            let bb_list = self.get_bb_from_range(*start, *end);
+            let bbrange = self.get_bb_from_range(*start, *end);
+            let bb_list = bbrange.0;
+            let head_bid = bbrange.1;
+
             for bb_id in bb_list.iter() {
                 self.out.bbinfo_list[*bb_id as usize].is_loop = true;
 
@@ -818,8 +840,14 @@ impl BBInfoBuilder {
                     let assignment =
                         self.do_loop_iv_assignment_in_range(from, to);
 
-                    self.out.bbinfo_list[*bb_id as usize].loop_iv_assignment =
-                        assignment;
+                    let vsize = self.tmp_var_size();
+
+                    BBInfoBuilder::merge_assignment(
+                        vsize,
+                        &mut self.out.bbinfo_list[head_bid as usize]
+                            .loop_iv_assignment,
+                        &assignment,
+                    );
                 }
             }
         }

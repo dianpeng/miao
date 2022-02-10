@@ -252,11 +252,6 @@ pub enum Opcode {
     // placeholder, used to indicate the effect related stuff.
     RvEffectStart,
 
-    // indicates the happened after, ie loading a memory position should be
-    // happened after a certain operation. The memory location cannot be bound
-    // to any order since memory location is a value, not a operation
-    RvEffectAfter,
-
     // placeholder node, used to mark that the value is not materialized yet
     Placeholder,
 
@@ -492,6 +487,17 @@ pub enum Opcode {
     RvMemIndexStore,
     RvMemDotLoad,
     RvMemDotStore,
+
+    // indicate a memory region load operation, since memory can be mutated via
+    // multiple sites and cannot be detected simply by SSA during IR construction,
+    // this node is used indicate that memory access must be |AFTER| a certain
+    // effect node to be done. This node may be rewritten into looser form during
+    // effect analysis later on.
+    //
+    // This node has 2 inputs, one is in its value operands which should points
+    // to a memory location or a PHI node; and the other is a effect dependency
+    // stored in its effect list.
+    RvMemAccess,
 
     // Represent the function input arguments,
     RvParam,
@@ -856,9 +862,9 @@ pub struct Mpool {
     op_rv_mem_index_store: Oref,
     op_rv_mem_dot_load: Oref,
     op_rv_mem_dot_store: Oref,
+    op_rv_mem_access: Oref,
 
     op_rv_effect_start: Oref,
-    op_rv_effect_after: Oref,
 
     op_rv_assert1: Oref,
     op_rv_assert2: Oref,
@@ -1440,30 +1446,33 @@ impl Node {
         x.borrow_mut().effect.remove(i);
     }
 
-    pub fn remove_value_node(x: &mut Nref, v: &Nref) {
+    pub fn remove_value_node(x: &mut Nref, v: &Nref) -> bool {
         let idx = match x.borrow().value.iter().position(|l| Nref::ptr_eq(l, v))
         {
             Option::Some(idx) => idx,
-            _ => return,
+            _ => return false,
         };
         Node::remove_value(x, idx);
+        return true;
     }
 
-    pub fn remove_control_node(x: &mut Nref, v: &Nref) {
+    pub fn remove_control_node(x: &mut Nref, v: &Nref) -> bool {
         let idx = match x.borrow().cfg.iter().position(|l| Nref::ptr_eq(l, v)) {
             Option::Some(idx) => idx,
-            _ => return,
+            _ => return false,
         };
         Node::remove_control(x, idx);
+        return true;
     }
 
-    pub fn remove_effect_node(x: &mut Nref, v: &Nref) {
+    pub fn remove_effect_node(x: &mut Nref, v: &Nref) -> bool {
         let idx = match x.borrow().effect.iter().position(|l| Nref::ptr_eq(l, v))
         {
             Option::Some(idx) => idx,
-            _ => return,
+            _ => return false,
         };
         Node::remove_effect(x, idx);
+        return true;
     }
 
     // replace the value inplaces
@@ -1719,8 +1728,6 @@ impl Node {
     }
 
     pub fn add_effect(node: &mut Nref, v: Nref) {
-        assert!(node.borrow().is_cfg());
-
         // (0) adding the def-use into the v
         {
             let weak_ref = Rc::downgrade(node);
@@ -1839,6 +1846,19 @@ impl Node {
         return self.value[0].clone();
     }
 
+    pub fn v0(&self) -> Nref {
+        debug_assert!(self.value.len() >= 1);
+        return self.value[0].clone();
+    }
+    pub fn v1(&self) -> Nref {
+        debug_assert!(self.value.len() >= 2);
+        return self.value[1].clone();
+    }
+    pub fn v2(&self) -> Nref {
+        debug_assert!(self.value.len() >= 3);
+        return self.value[2].clone();
+    }
+
     pub fn has_value(&self) -> bool {
         return self.value.len() != 0;
     }
@@ -1887,6 +1907,7 @@ impl Node {
     pub fn is_low(&self) -> bool {
         return Op::is_low(&self.op);
     }
+
     pub fn is_imm(&self) -> bool {
         debug_assert!(self.imm.is_imm());
         return Op::is_imm(&self.op);
@@ -1922,27 +1943,42 @@ impl Node {
     pub fn is_rv_object_create(&self) -> bool {
         return self.op.op == Opcode::RvObjectCreate;
     }
-    pub fn is_rv_memory(&self) -> bool {
+    pub fn is_rv_memory_location(&self) -> bool {
         if self.is_rv_object_create() || self.is_rv_list_create() {
             return true;
         }
         return false;
     }
-    pub fn test_rv_memory(&self) -> bool {
-        if self.is_rv_object_create() || self.is_rv_list_create() {
+
+    pub fn is_rv_memory_access(&self) -> bool {
+        return self.is_rv_memory_location()
+            || self.op.op == Opcode::RvMemAccess;
+    }
+
+    // testify that the node uses memory or not. This function will recursively
+    // walk the node to check whether it comes with some memory location uses if
+    // it is a PHI node, notes, other node cannot generate memory value even its
+    // value input has memory except following :
+    //
+    //   1) RvListCreate
+    //   2) RvObjectCreate
+    //   3) RvMemAccess
+    //   4) RvPHI(maybe)
+    //
+    pub fn generate_memory(&self) -> bool {
+        if self.is_rv_memory_access() {
             return true;
         }
-        // check whether it is a PHI node, if so, iterate through each nodes
-        // recursively to testify whether it is a rv memory
         if self.is_phi() {
             for x in self.value.iter() {
-                if x.borrow().is_rv_memory() {
+                if x.borrow().generate_memory() {
                     return true;
                 }
             }
         }
         return false;
     }
+
     pub fn is_cfg_start(&self) -> bool {
         return self.op.op == Opcode::CfgStart;
     }
@@ -3322,14 +3358,14 @@ impl Op {
         ))
     }
 
-    fn rv_effect_after() -> Oref {
+    fn rv_mem_access() -> Oref {
         Oref::new(Op::new_untype(
-            "rv_effect_after",
+            "rv_mem_access",
             OpTier::Rval,
-            Opcode::RvEffectAfter,
+            Opcode::RvMemAccess,
+            true,
             false,
-            false,
-            ParamLimits::Limit(2),
+            ParamLimits::Limit(1),
             MachineFlag::new_default(),
         ))
     }
@@ -4322,9 +4358,9 @@ impl Mpool {
             op_rv_mem_index_store: Op::rv_mem_index_store(),
             op_rv_mem_dot_load: Op::rv_mem_dot_load(),
             op_rv_mem_dot_store: Op::rv_mem_dot_store(),
+            op_rv_mem_access: Op::rv_mem_access(),
 
             op_rv_effect_start: Op::rv_effect_start(),
-            op_rv_effect_after: Op::rv_effect_after(),
 
             op_rv_assert1: Op::rv_assert1(),
             op_rv_assert2: Op::rv_assert2(),
@@ -5135,6 +5171,39 @@ impl Mpool {
     // ========================================================================
     // Immediate
     // ========================================================================
+    pub fn imm_to_op(&self, imm: &Imm) -> Option<Oref> {
+        return match imm {
+            Imm::Index(_) => Option::Some(self.op_imm_index.clone()),
+
+            Imm::ImmU32(_) => Option::Some(self.op_imm_u32.clone()),
+            Imm::ImmU16(_) => Option::Some(self.op_imm_u16.clone()),
+            Imm::ImmU8(_) => Option::Some(self.op_imm_u8.clone()),
+
+            Imm::ImmI64(_) => Option::Some(self.op_imm_i64.clone()),
+            Imm::ImmI32(_) => Option::Some(self.op_imm_i32.clone()),
+            Imm::ImmI16(_) => Option::Some(self.op_imm_i16.clone()),
+            Imm::ImmI8(_) => Option::Some(self.op_imm_i8.clone()),
+
+            Imm::ImmF64(_) => Option::Some(self.op_imm_f64.clone()),
+            Imm::ImmBoolean(_) => Option::Some(self.op_imm_boolean.clone()),
+            Imm::ImmNull => Option::Some(self.op_imm_null.clone()),
+            Imm::ImmStr(_) => Option::Some(self.op_imm_string.clone()),
+
+            _ => Option::None,
+        };
+    }
+
+    pub fn new_imm_node(&mut self, imm: Imm, bcpos: BcCtx) -> Nref {
+        let op = match self.imm_to_op(&imm) {
+            Option::Some(v) => v,
+            _ => unreachable!(),
+        };
+
+        let x = Node::new_imm(op, self.node_next_id(), bcpos, imm);
+        self.watch_node(&x);
+        return x;
+    }
+
     pub fn new_imm_index(&mut self, index: u32, bcpos: BcCtx) -> Nref {
         let x = Node::new_imm(
             Oref::clone(&self.op_imm_index),
@@ -5671,14 +5740,25 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_effect_after(&mut self, val: Nref, effect: Nref) -> Nref {
+    pub fn new_rv_mem_access(&mut self, val: Nref, effect: Nref) -> Nref {
         let mut n = Node::new(
-            Oref::clone(&self.op_rv_effect_after),
+            Oref::clone(&self.op_rv_mem_access),
             self.node_next_id(),
             BcCtx::new_unknown(),
         );
         Node::add_value(&mut n, val);
-        Node::add_value(&mut n, effect);
+        Node::add_effect(&mut n, effect);
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_rv_mem_access_no_effect(&mut self, val: Nref) -> Nref {
+        let mut n = Node::new(
+            Oref::clone(&self.op_rv_mem_access),
+            self.node_next_id(),
+            BcCtx::new_unknown(),
+        );
+        Node::add_value(&mut n, val);
         self.watch_node(&n);
         return n;
     }

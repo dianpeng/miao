@@ -1950,8 +1950,16 @@ mod fbuilder_tests {
         do_print_code(
             r#"
 
-a = a;
-return i;
+let i = 0;
+let x = 10;
+for {
+    if i > 10 break;
+    i += 1;
+    g = x;
+    x = 20;
+}
+
+return x;
 
 "#,
         );

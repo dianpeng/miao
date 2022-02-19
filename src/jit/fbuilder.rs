@@ -1044,6 +1044,41 @@ impl FBuilder {
     }
 
     // Iterators
+    //
+    //   The iterator will perform a on the fly specialization of the iterator
+    //   mainly to allow effect analysis to work before lowering. Most of the
+    //   guard instruction, specifically for expression is been inserted during
+    //   the rv_lower pass. For iterators, they are added here. Basically, the
+    //   iterator_XXX bytecode is side effect bytecode and they are gonna be
+    //   respected during effect pass which may prevent the global/upvalue
+    //   load from been eliminated.
+    //
+    //
+    //   Considering following cases :
+    //
+    //   let x = [...];
+    //
+    //   for y in x {
+    //     g = 10;
+    //   }
+    //
+    //   Implicitly, there're a iterator_value/has call after the g = 10,
+    //   these 2 calls are default to be having side effect which will be
+    //   considered as they are consuming all the global value known to us,
+    //   so the g = 10 will be ordered before loop tail. But indeed, we know
+    //   the iterator is a list iterator which will never look at the global
+    //   since they are builtins.
+    //
+    //   The graph can distinguish these 2 difference by inspecting the IR
+    //   nodes, ie a RvIteratorValue is side effect but a RvListIteratorValue
+    //   is not since we know it is a builtin one.
+    //
+    //   By specialize the iterator during IR construction the effect pass can
+    //   take advantage of this information to hoist g assignment statement out
+    //   of the corresponding effect control node and then g can participate in
+    //   GCM which specifically eliminate the store from the loop g by placing
+    //   the assignment/store after the loop or before the loop.
+    //
     fn b_iterator_new(&mut self, bcpos: u32) -> bool {
         let opr = self.arg_una();
         let itr = self
@@ -1204,9 +1239,14 @@ impl FBuilder {
             .borrow_mut()
             .new_imm_index(idx, self.bc_ctx(bcpos));
 
+        let name = self
+            .mptr()
+            .borrow_mut()
+            .new_rv_load_string(idx, self.bc_ctx(bcpos));
+
         let v = self.mptr().borrow_mut().new_dot_access(
             recv,
-            idx,
+            name,
             self.bc_ctx(bcpos),
         );
 
@@ -1223,9 +1263,14 @@ impl FBuilder {
             .borrow_mut()
             .new_imm_index(idx, self.bc_ctx(bcpos));
 
+        let name = self
+            .mptr()
+            .borrow_mut()
+            .new_rv_load_string(idx, self.bc_ctx(bcpos));
+
         let v = self.mptr().borrow_mut().new_dot_store(
             recv,
-            idx,
+            name,
             value,
             self.bc_ctx(bcpos),
         );

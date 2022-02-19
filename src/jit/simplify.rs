@@ -52,6 +52,21 @@ impl NodePass for RvSimplify {
             Opcode::RvLoadFalse => {
                 self.simplify_ld_false(Nref::clone(&cur));
             }
+
+            // Identity check and elimination when no side effect exists
+            //   for global variable or upvalue assignment, we try to find
+            //   the following cases and eliminate them
+            //
+            //   g = g;             // g is global
+            //   upvalue = uvpalue; // upvalue is a upvalue
+            //   a.b.c.d = a.b.c.d; // field store is the same
+            //
+            Opcode::RvSetGlobal => {
+                self.simplify_set_global(Nref::clone(&cur));
+            }
+            Opcode::RvSetUpvalue => {
+                self.simplify_set_upvalue(Nref::clone(&cur));
+            }
             _ => (),
         };
 
@@ -119,6 +134,36 @@ impl RvSimplify {
 
     fn simplify_phi(&mut self, x: Nref) {
         simplify_phi_node(x);
+    }
+
+    fn simplify_set_global(&mut self, mut x: Nref) {
+        let global_name = Node::global_name(&x, &self.f.borrow().func);
+
+        // if the node's value is a load global with the same global name then
+        // we know this load is useless and can be eliminated
+        let v = x.borrow().v1();
+        if v.borrow().op.op == Opcode::RvLoadGlobal {
+            let load_name = Node::global_name(&x, &self.f.borrow().func);
+            if load_name == global_name {
+                // eliminate this nodes
+                Node::dispose(&mut x);
+            }
+        }
+    }
+
+    fn simplify_set_upvalue(&mut self, mut x: Nref) {
+        let index = Node::upvalue_index(&x, &self.f.borrow().func);
+
+        // if the node's value is a load global with the same global name then
+        // we know this load is useless and can be eliminated
+        let v = x.borrow().v1();
+        if v.borrow().op.op == Opcode::RvLoadUpvalue {
+            let load_index = Node::upvalue_index(&x, &self.f.borrow().func);
+            if load_index == index {
+                // eliminate this nodes
+                Node::dispose(&mut x);
+            }
+        }
     }
 
     fn simplify_mem_access(&mut self, mut x: Nref) {

@@ -250,7 +250,8 @@ pub enum Opcode {
 
     // indicate the start of the effect chain, notes this is just a effect
     // placeholder, used to indicate the effect related stuff.
-    RvEffectStart,
+    EffectStart,
+    EffectJoin,
 
     // placeholder node, used to mark that the value is not materialized yet
     Placeholder,
@@ -864,7 +865,8 @@ pub struct Mpool {
     op_rv_mem_dot_store: Oref,
     op_rv_mem_access: Oref,
 
-    op_rv_effect_start: Oref,
+    op_effect_start: Oref,
+    op_effect_join: Oref,
 
     op_rv_assert1: Oref,
     op_rv_assert2: Oref,
@@ -1475,6 +1477,54 @@ impl Node {
         return true;
     }
 
+    pub fn remove_all_value(x: &mut Nref) {
+        loop {
+            if x.borrow().value.len() == 0 {
+                break;
+            }
+
+            {
+                let mut def = x.borrow().value[0].clone();
+                Node::remove_def_use(x, DefUse::Value(Nref::downgrade(x)));
+            }
+            x.borrow_mut().value.remove(0);
+        }
+    }
+
+    pub fn remove_all_control(x: &mut Nref) {
+        loop {
+            if x.borrow().cfg.len() == 0 {
+                break;
+            }
+
+            {
+                let mut def = x.borrow().cfg[0].clone();
+                Node::remove_def_use(x, DefUse::Control(Nref::downgrade(x)));
+            }
+            x.borrow_mut().cfg.remove(0);
+        }
+    }
+
+    pub fn remove_all_effect(x: &mut Nref) {
+        loop {
+            if x.borrow().effect.len() == 0 {
+                break;
+            }
+
+            {
+                let mut def = x.borrow().effect[0].clone();
+                Node::remove_def_use(x, DefUse::Effect(Nref::downgrade(x)));
+            }
+            x.borrow_mut().effect.remove(0);
+        }
+    }
+
+    pub fn remove_all_input(x: &mut Nref) {
+        Node::remove_all_value(x);
+        Node::remove_all_control(x);
+        Node::remove_all_effect(x);
+    }
+
     // replace the value inplaces
     pub fn replace_value(x: &mut Nref, i: usize, new_val: Nref) {
         {
@@ -1525,7 +1575,7 @@ impl Node {
     }
 
     // Predecessor filter
-    pub fn pred_control(x: &mut Nref) -> Vec<Nref> {
+    pub fn pred_control(x: &Nref) -> Vec<Nref> {
         let mut o: Vec<Nref> = Vec::new();
 
         for x in x.borrow().def_use.iter() {
@@ -1617,6 +1667,13 @@ impl Node {
 
     pub fn replace_and_dispose(x: &mut Nref, y: Nref) {
         Node::replace(x, y);
+        Node::remove_all_input(x);
+        x.borrow_mut().mark_dead();
+    }
+
+    pub fn dispose(x: &mut Nref) {
+        Node::remove_all_use(x);
+        Node::remove_all_input(x);
         x.borrow_mut().mark_dead();
     }
 
@@ -1752,18 +1809,33 @@ impl Node {
     // Basically identical node are
     //
     //   1) same node with same Nref
-    //
     //   2) or same immediate node
     pub fn node_identical(lhs: &Nref, rhs: &Nref) -> bool {
         if Nref::ptr_eq(lhs, rhs) {
             return true;
         }
-
         if lhs.borrow().is_imm() && rhs.borrow().is_imm() {
             return lhs.borrow().imm == rhs.borrow().imm;
         }
 
         return false;
+    }
+
+    // memory/effect related
+    pub fn must_not_generate_memory(&self) -> bool {
+        // IR node that is impossible to generate memory output
+        match self.op.op {
+            Opcode::RvPhi
+            | Opcode::RvListCreate
+            | Opcode::RvObjectCreate
+            | Opcode::RvCall
+            | Opcode::RvMemAccess
+            | Opcode::RvMemIndexLoad
+            | Opcode::RvMemDotLoad => {
+                return true;
+            }
+            _ => return false,
+        };
     }
 
     // -----------------------------------------------------------------------
@@ -3370,14 +3442,26 @@ impl Op {
         ))
     }
 
-    fn rv_effect_start() -> Oref {
+    fn effect_start() -> Oref {
         Oref::new(Op::new_untype(
-            "rv_effect_start",
-            OpTier::Rval,
-            Opcode::RvEffectStart,
+            "effect_start",
+            OpTier::Pseudo,
+            Opcode::EffectStart,
             false,
             false,
             ParamLimits::Limit(0),
+            MachineFlag::new_default(),
+        ))
+    }
+
+    fn effect_join() -> Oref {
+        Oref::new(Op::new_untype(
+            "effect_join",
+            OpTier::Pseudo,
+            Opcode::EffectJoin,
+            false,
+            false,
+            ParamLimits::Any,
             MachineFlag::new_default(),
         ))
     }
@@ -4360,7 +4444,8 @@ impl Mpool {
             op_rv_mem_dot_store: Op::rv_mem_dot_store(),
             op_rv_mem_access: Op::rv_mem_access(),
 
-            op_rv_effect_start: Op::rv_effect_start(),
+            op_effect_start: Op::effect_start(),
+            op_effect_join: Op::effect_join(),
 
             op_rv_assert1: Op::rv_assert1(),
             op_rv_assert2: Op::rv_assert2(),
@@ -4372,6 +4457,7 @@ impl Mpool {
             op_rv_to_string: Op::rv_to_string(),
             op_rv_to_boolean: Op::rv_to_boolean(),
             op_rv_phi: Op::rv_phi(),
+
             op_rv_param: Op::rv_param(),
 
             // Mid
@@ -5730,9 +5816,19 @@ impl Mpool {
         return n;
     }
 
-    pub fn new_rv_effect_start(&mut self, _: BcCtx) -> Nref {
+    pub fn new_effect_start(&mut self, _: BcCtx) -> Nref {
         let n = Node::new(
-            Oref::clone(&self.op_rv_effect_start),
+            Oref::clone(&self.op_effect_start),
+            self.node_next_id(),
+            BcCtx::new_unknown(),
+        );
+        self.watch_node(&n);
+        return n;
+    }
+
+    pub fn new_effect_join(&mut self, _: BcCtx) -> Nref {
+        let n = Node::new(
+            Oref::clone(&self.op_effect_join),
             self.node_next_id(),
             BcCtx::new_unknown(),
         );
@@ -6346,7 +6442,7 @@ impl Mpool {
             self.node_next_id(),
             bcpos.clone(),
         );
-        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
+        Node::add_effect(&mut n, self.new_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
@@ -6357,7 +6453,7 @@ impl Mpool {
             self.node_next_id(),
             bcpos.clone(),
         );
-        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
+        Node::add_effect(&mut n, self.new_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
@@ -6368,7 +6464,7 @@ impl Mpool {
             self.node_next_id(),
             bcpos.clone(),
         );
-        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
+        Node::add_effect(&mut n, self.new_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
@@ -6379,7 +6475,7 @@ impl Mpool {
             self.node_next_id(),
             bcpos.clone(),
         );
-        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
+        Node::add_effect(&mut n, self.new_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }
@@ -6390,7 +6486,7 @@ impl Mpool {
             self.node_next_id(),
             bcpos.clone(),
         );
-        Node::add_effect(&mut n, self.new_rv_effect_start(bcpos));
+        Node::add_effect(&mut n, self.new_effect_start(bcpos));
         self.watch_node(&n);
         return n;
     }

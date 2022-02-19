@@ -13,3 +13,5 @@ pub mod simplify;
 pub mod typer;
 pub mod constant_fold;
 pub mod gvn;
+
+pub mod aa;
